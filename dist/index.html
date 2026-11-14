@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ko">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>땡겨요 | 주문자</title>
+  <link rel="stylesheet" href="styles.css">
+  <script type="module" src="customer.js"></script>
+</head>
+<body class="customer-body">
+  <a class="switch-screen" href="merchant.html">사장님 화면 ↗</a>
+  <main class="phone" aria-label="땡겨요 주문자 앱">
+    <div class="phone-status" aria-hidden="true"><span>9:41</span><i></i><span>▮▮ 5G ▰</span></div>
+    <div class="phone-scroll" id="screen"><p class="empty">불러오는 중…</p></div>
+    <div id="checkout-bar"></div>
+    <nav class="phone-nav" aria-label="주문자 탭">
+      <button data-go="home" aria-current="page"><img src="assets/nav-0.webp" alt="">홈</button>
+      <button data-go="favorites"><img src="assets/nav-1.webp" alt="">찜</button>
+      <button disabled><span class="nav-spark" aria-hidden="true">✧</span>메뉴 추천</button>
+      <button data-go="orders"><img src="assets/nav-3.webp" alt="">주문 내역</button>
+      <button data-go="my"><img src="assets/nav-4.webp" alt="">마이</button>
+    </nav>
+    <div id="customer-message" class="toast" role="status" aria-live="polite"></div>
+  </main>
+</body>
+</html>
