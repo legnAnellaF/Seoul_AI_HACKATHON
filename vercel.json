@@ -1,4 +1,5 @@
 {
   "framework": null,
-  "outputDirectory": "dist"
+  "outputDirectory": "dist",
+  "functions": { "api/recommend.js": { "maxDuration": 30 } }
 }

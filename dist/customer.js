@@ -425,7 +425,10 @@ screen.addEventListener("submit", event => {
 try {
   await catalog();
   syncCart();
-  if (new URLSearchParams(location.search).get("category") === "chicken") open("category", "chicken");
+  const params = new URLSearchParams(location.search);
+  const linked = getStore(params.get("store"));
+  if (linked) open("store", linked.id);
+  else if (params.get("category") === "chicken") open("category", "chicken");
   else render(true);
 } catch (error) {
   render(true);

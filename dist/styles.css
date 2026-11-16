@@ -58,7 +58,8 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #b94322; }
   display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); align-items: stretch; flex: none; background: white;
   border-top: 1px solid var(--line); min-height: 64px; padding: 4px 5px max(5px, env(safe-area-inset-bottom));
 }
-.phone-nav button { display: grid; justify-items: center; align-content: center; gap: 4px; font-size: 11px; font-weight: 750; white-space: nowrap; border-radius: 8px; }
+.phone-nav :is(button, a) { display: grid; justify-items: center; align-content: center; gap: 4px; font-size: 11px; font-weight: 750; white-space: nowrap; border-radius: 8px; }
+.phone-nav .recommend-tab { color: var(--dark-orange); }
 .phone-nav img { width: 23px; height: 23px; object-fit: contain; }
 .phone-nav button[aria-current] { color: var(--dark-orange); background: #fff4ed; }
 .nav-spark { height: 23px; font-size: 24px; line-height: 23px; }
