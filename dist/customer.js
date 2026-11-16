@@ -94,7 +94,7 @@ function home() {
   const cats = [...state.categories.slice(0, 8), { id: "nearby", name: "주변 가게" }, { id: "more", name: "더보기" }];
   const shortcuts = ["무료배달", "온누리/지역화폐", "포장/매장식사", "전국 휴게소"];
   const address = activeAddress();
-  return '<section class="home-screen"><header class="home-head">' +
+  return '<section class="home-screen"><h1 class="home-brand">당겨요</h1><header class="home-head">' +
     '<button class="address-button" data-act="addresses"><span class="pin" aria-hidden="true"></span><strong>' +
     esc(address ? address.road : "배달 주소를 등록해 주세요") + '</strong><span aria-hidden="true">⌄</span></button>' +
     '<button class="icon-button image-icon" aria-label="알림 목록" data-act="notifications"><img src="assets/bell.webp" alt=""></button>' +
