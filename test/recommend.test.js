@@ -95,7 +95,7 @@ test('shows exact dishes, then explicitly labeled category alternatives for miss
   const exactShop = await textTurn(engine, store, '미소반점 있어?');
   assert.deepEqual(cards(exactShop), ['gangnam-chinese']);
   const overBudget = await textTurn(engine, exact, '8천 원 미만');
-  assert.match(overBudget.reply.text, /등록되어 있지만 현재 조건/);
+  assert.match(overBudget.reply.text, /데이터는 있지만 현재 조건/);
   assert.deepEqual(cards(overBudget), []);
 });
 
@@ -135,6 +135,9 @@ test('Gemini can identify a specific new dish without introducing an invented me
   assert.match(fallback.reply.text, /트러플 피자.*찾지 못했어요/);
   const short = await textTurn(engine, first, '트러플 피자');
   assert.match(short.reply.text, /트러플 피자.*찾지 못했어요/);
+  const withPrice = await textTurn(engine, first, '강남구에서 트러플 피자 추천해줘. 가격은 상관없어');
+  assert.equal(withPrice.state.cond.budget, null);
+  assert.match(withPrice.reply.text, /트러플 피자.*찾지 못했어요/);
 });
 
 test('understands the reported 1만원대 and excludes the original district on request', async () => {
