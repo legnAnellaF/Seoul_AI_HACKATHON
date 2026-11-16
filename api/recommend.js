@@ -49,7 +49,7 @@ export default async function recommend(req, res) {
     console.warn("Recommendation catalog unavailable:", error.message);
     return res.status(503).json({ error: "가게 데이터를 불러오지 못했어요. 잠시 후 다시 시도해 주세요." });
   }
-  if (req.method === "GET") return res.status(200).json({ regions: current.regions });
+  if (req.method === "GET") return res.status(200).json({ regions: current.regions, categories: current.categories });
 
   if (body.action.type === "dong" && !current.regions.includes(body.action.dong)) {
     return res.status(400).json({ error: "목록에 표시된 지역을 골라 주세요." });
