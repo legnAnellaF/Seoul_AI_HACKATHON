@@ -1,25 +1,25 @@
-import { api, authForm, date, esc, readLocal, receiveSession, rpc, saveLocal, session, signOut, statusLabels, submitAuth, won } from "./db.js";
+import { date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 
 const screen = document.querySelector("#screen");
 const bar = document.querySelector("#checkout-bar");
 const message = document.querySelector("#customer-message");
 const icons = { chicken: 3, dessert: 4, pizza: 5, korean: 6, burger: 7, chinese: 8, more: 9 };
 const glyphs = { japanese: "🍣", western: "🍝", nearby: "📍" };
-const state = { categories: [], stores: [], menus: [], query: "", addressQuery: "" };
+const state = { categories: [], stores: [], menus: [], menuGroups: new Map(), query: "", addressQuery: "", listLimit: 30 };
 let route = { name: "home" };
 let previous = [];
 let busy = false;
 let messageTimer;
 
-const storageKey = (name, scope = session()?.user?.id ?? "guest") => "seoul-" + scope + "-" + name;
+const storageKey = name => "seoul-demo-" + name;
 const stored = (name, fallback) => readLocal(storageKey(name), fallback);
 const write = (name, value) => saveLocal(storageKey(name), value);
 const cart = () => stored("cart", []);
 const favorites = () => stored("favorites", []);
 const addresses = () => stored("addresses", []);
-const activeAddress = () => addresses().find(item => item.id === stored("address", null));
+const activeAddress = () => addresses().find(item => item.id === stored("address", null)) || { road: "서울 서초구 시연 주소" };
 const getStore = id => state.stores.find(store => store.id === id);
-const menusFor = id => state.menus.filter(item => item.store_id === id);
+const menusFor = id => state.menuGroups.get(id) || [];
 const itemCount = rows => rows.reduce((total, item) => total + item.quantity, 0);
 const cost = rows => rows.reduce((total, item) => total + item.price * item.quantity, 0);
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
@@ -40,6 +40,7 @@ function open(name, value, tab = false) {
   if (tab) previous = [];
   else previous.push(route);
   route = { name, value };
+  state.listLimit = 30;
   if (name === "search") state.query = "";
   if (name === "addresses") state.addressQuery = "";
   render(true);
@@ -49,18 +50,27 @@ function open(name, value, tab = false) {
 
 function back() {
   route = previous.pop() ?? { name: "home" };
+  state.listLimit = 30;
   render(true);
 }
 
 async function catalog() {
-  const [categories, stores, menus] = await Promise.all([
-    api("categories", { order: "position" }),
-    api("stores", { order: "name" }),
-    api("menu_items", { available: "eq.true", order: "id" }),
-  ]);
-  state.categories = categories;
+  const { stores, menus } = await demo("catalog");
+  const preferred = [["chicken","치킨"],["dessert","카페/디저트"],["pizza","피자"],["korean","한식"],
+    ["burger","버거"],["chinese","중식"],["japanese","일식"],["western","양식"]];
+  const known = new Map(preferred);
+  const additional = new Map(stores.filter(store => !known.has(store.category_id))
+    .map(store => [store.category_id, store.category]));
+  state.categories = [...preferred, ...[...additional].sort((a, b) => a[1].localeCompare(b[1], "ko"))]
+    .map(([id, name]) => ({ id, name }));
   state.stores = stores;
-  state.menus = menus.filter(item => stores.some(store => store.id === item.store_id));
+  state.menus = menus.filter(item => item.available);
+  state.menuGroups = new Map();
+  for (const item of state.menus) {
+    const group = state.menuGroups.get(item.store_id) || [];
+    group.push(item);
+    state.menuGroups.set(item.store_id, group);
+  }
 }
 
 function categoryImage(id) {
@@ -70,7 +80,7 @@ function categoryImage(id) {
 }
 
 function home() {
-  const cats = [...state.categories, { id: "nearby", name: "주변 가게" }, { id: "more", name: "더보기" }];
+  const cats = [...state.categories.slice(0, 8), { id: "nearby", name: "주변 가게" }, { id: "more", name: "더보기" }];
   const shortcuts = ["무료배달", "온누리/지역화폐", "포장/매장식사", "전국 휴게소"];
   const address = activeAddress();
   return '<section class="home-screen"><header class="home-head">' +
@@ -125,11 +135,12 @@ function heart(id) {
 
 function storeList(list) {
   if (!list.length) return empty("표시할 가게가 없습니다.");
-  return '<div class="store-list">' + list.map(store =>
+  return '<div class="store-list">' + list.slice(0, state.listLimit).map(store =>
     '<article class="store-card"><button class="store-open" data-act="store" data-value="' + esc(store.id) + '">' +
     '<div class="media-placeholder" aria-hidden="true"></div><span class="store-card-text"><strong>' + esc(store.name) +
-    '</strong><span>' + esc(store.district) + ' · ' + esc(store.delivery_time) + '</span><small>최소주문 ' + won(store.minimum) + ' · 배달비 ' + won(store.delivery_fee) +
-    '</small></span></button>' + heart(store.id) + '</article>').join("") + '</div>';
+    '</strong><span>' + esc(store.district) + ' · ' + esc(store.category) + '</span><small>배달비 ' + won(store.delivery_fee) +
+    '</small></span></button>' + heart(store.id) + '</article>').join("") +
+    (list.length > state.listLimit ? button("가게 더 보기", "load-more") : '') + '</div>';
 }
 
 function category() {
@@ -163,9 +174,9 @@ function detail() {
   const items = menusFor(store.id);
   return top(store.name, icon("장바구니", "🛒", "cart")) +
     '<div class="media-placeholder store-hero" aria-hidden="true"></div><section class="pane store-detail">' +
-    '<div class="spread"><h2>' + esc(store.name) + '</h2>' + heart(store.id) + '</div><p class="muted">' + esc(store.description) +
-    '</p><div class="pills"><span class="active-pill">배달</span></div><dl class="delivery-details"><div><dt>최소주문</dt><dd>' +
-    won(store.minimum) + '</dd></div><div><dt>가게배달</dt><dd>' + esc(store.delivery_time) + ' · 배달비 ' + won(store.delivery_fee) +
+    '<div class="spread"><h2>' + esc(store.name) + '</h2>' + heart(store.id) + '</div><p class="muted">' + esc(store.category) + ' · 합성 가게 데이터' +
+    '</p><div class="pills"><span class="active-pill">배달 시연</span></div><dl class="delivery-details"><div><dt>가게 평점</dt><dd>' +
+    esc(store.rating) + '</dd></div><div><dt>배달비</dt><dd>' + won(store.delivery_fee) +
     '</dd></div><div><dt>가게 위치</dt><dd>' + esc(store.district) + '</dd></div></dl></section>' +
     '<section class="menu-section"><div class="pane"><span class="active-pill">전체 메뉴</span><h2>메뉴</h2></div>' +
     (items.length ? items.map(item => {
@@ -173,8 +184,16 @@ function detail() {
       return '<article class="menu-row"><div><h3>' + esc(item.name) + '</h3><p class="muted">' + esc(item.description) +
         '</p><strong>' + won(item.price) + '</strong>' + (quantity ? '<small class="in-cart">담은 수량 ' + quantity + '</small>' : '') +
         '</div><div class="menu-image media-placeholder"><button class="menu-add" aria-label="' + esc(item.name + " 담기") +
-        '" data-act="add" data-value="' + item.id + '">+</button></div></article>';
+        '" data-act="add" data-value="' + esc(item.id) + '">+</button></div></article>';
     }).join("") : empty("등록된 메뉴가 없습니다.")) + '</section>';
+}
+
+function syncCart() {
+  const menuById = new Map(state.menus.map(item => [item.id, item]));
+  write("cart", cart().flatMap(row => {
+    const item = menuById.get(row.id);
+    return item ? [{ ...row, ...item }] : [];
+  }));
 }
 
 function basket() {
@@ -185,7 +204,7 @@ function basket() {
   return top("장바구니") + '<section class="pane stack">' + groups.map(id => {
     const store = getStore(id);
     return '<article class="basket-group"><h2>' + esc(store?.name || rows.find(row => row.store_id === id).store_name) + '</h2>' +
-      rows.filter(row => row.store_id === id).map(item => '<div class="basket-item"><label><input type="checkbox" data-select="' + item.id + '"' +
+      rows.filter(row => row.store_id === id).map(item => '<div class="basket-item"><label><input type="checkbox" data-select="' + esc(item.id) + '"' +
         (item.selected ? " checked" : "") + '><span><strong>' + esc(item.name) + '</strong><small>' + won(item.price * item.quantity) +
         '</small></span></label><div class="quantity">' + button("−", "minus", item.id, "mini") + item.quantity +
         button("+", "plus", item.id, "mini") + '</div>' + button("삭제", "remove", item.id, "plain muted") + '</div>').join("") +
@@ -195,9 +214,8 @@ function basket() {
 }
 
 function account() {
-  const user = session()?.user;
   return '<header class="screen-header"><h1>마이</h1></header><section class="pane stack">' +
-    (user ? '<h2>' + esc(user.user_metadata?.nickname || user.email?.split("@")[0]) + ' 님</h2>' + button("로그아웃", "logout") : '<h2>로그인</h2>' + authForm()) +
+    '<h2>서초이웃 님</h2><p class="muted">시연 프로필 · 주문과 찜은 이 브라우저에 연결됩니다.</p>' +
     '<div class="account-links">' + button("주소 관리 ›", "addresses", "", "plain left") +
     button("주문 관리 ›", "orders", "", "plain left") + button("리뷰 관리 ›", "my-reviews", "", "plain left") +
     '<a class="plain left" href="merchant.html">사장님 화면 ↗</a></div></section>';
@@ -207,7 +225,6 @@ function activity(name) {
   const titles = { orders: "주문 내역", notifications: "알림", "my-reviews": "내 리뷰" };
   const header = name === "orders" ? '<header class="screen-header"><h1>주문 내역</h1>' + icon("새로고침", "↻", "refresh") + '</header>' :
     top(titles[name], icon("새로고침", "↻", "refresh"));
-  if (!session()) return header + '<div class="pane stack">' + empty("로그인하면 확인할 수 있습니다.") + button("로그인하기", "my", "", "primary") + '</div>';
   if (state.activityError) return header + empty(state.activityError);
   if (!state.orders) return header + empty("불러오는 중…");
   const rows = name === "my-reviews" ? state.orders.filter(order => order.delivery_reviews) : state.orders;
@@ -226,14 +243,9 @@ function activity(name) {
 }
 
 async function fetchActivity() {
-  const userId = session()?.user?.id;
-  if (!userId) return;
   state.activityError = "";
   try {
-    const rows = await api("delivery_orders", {
-      select: "*,delivery_reviews(rating,body,reply)", customer_id: "eq." + userId, order: "created_at.desc"
-    });
-    if (session()?.user?.id === userId) state.orders = rows;
+    state.orders = await demo("orders");
   } catch (error) { state.activityError = error.message; }
   if (["orders", "notifications", "my-reviews"].includes(route.name)) render();
 }
@@ -292,9 +304,14 @@ function updateCart(id, change) {
 }
 
 async function checkout() {
-  if (!session()) { open("my"); return notify("주문하려면 로그인해 주세요."); }
   const address = activeAddress();
-  if (!address) { open("addresses"); return notify("배달 주소를 등록하거나 선택해 주세요."); }
+  const before = JSON.stringify(cart());
+  await catalog();
+  syncCart();
+  if (JSON.stringify(cart()) !== before) {
+    render();
+    throw new Error("메뉴 구성이나 가격이 변경됐습니다. 확인 후 다시 주문해 주세요.");
+  }
   const rows = cart().filter(row => row.selected);
   if (!rows.length) return;
   const idList = [...new Set(rows.map(row => row.store_id))];
@@ -305,16 +322,18 @@ async function checkout() {
   const attempt = stored("checkout-attempt", {});
   const key = attempt.signature === signature ? attempt.key : crypto.randomUUID();
   write("checkout-attempt", { signature, key });
-  await rpc("place_delivery_order", { ...payload, retry_key: key });
+  await demo("place", { ...payload, retry_key: key });
+  saveLocal("seoul-demo-store", idList[0]);
   write("cart", cart().filter(item => !rows.some(row => row.id === item.id)));
   write("checkout-attempt", {});
   state.orders = undefined;
   open("orders", undefined, true);
-  notify("주문을 접수했습니다.");
+  notify("시연 주문을 접수했습니다.");
 }
 
 const actions = {
   back, checkout, refresh: fetchActivity,
+  "load-more"() { state.listLimit += 30; render(); },
   heart(id) {
     const values = favorites();
     write("favorites", values.includes(id) ? values.filter(value => value !== id) : [...values, id]);
@@ -334,14 +353,9 @@ const actions = {
       { timeout: 6000 }
     );
   },
-  async logout() {
-    await signOut();
-    state.orders = undefined;
-    render();
-    notify("로그아웃했습니다.");
-  }
+
 };
-for (const name of ["add", "plus", "minus", "remove"]) actions[name] = id => updateCart(Number(id), name);
+for (const name of ["add", "plus", "minus", "remove"]) actions[name] = id => updateCart(id, name);
 
 async function run(task, control) {
   if (busy) return;
@@ -369,6 +383,7 @@ document.addEventListener("click", event => {
 screen.addEventListener("input", event => {
   if (event.target.id === "search-query") {
     state.query = event.target.value;
+    state.listLimit = 30;
     screen.querySelector("#search-results").innerHTML = searchResults();
   }
   if (event.target.id === "address-query") {
@@ -379,7 +394,7 @@ screen.addEventListener("input", event => {
 
 screen.addEventListener("change", event => {
   if (!event.target.matches("[data-select]")) return;
-  const id = Number(event.target.dataset.select);
+  const id = event.target.dataset.select;
   write("cart", cart().map(item => item.id === id ? { ...item, selected: event.target.checked } : item));
   render();
   screen.querySelector('[data-select="' + id + '"]')?.focus({ preventScroll: true });
@@ -398,22 +413,8 @@ screen.addEventListener("submit", event => {
       back();
       notify("주소를 저장했습니다.");
     }
-    if (form.id === "auth-form") {
-      const wasGuest = !session();
-      const signedIn = await submitAuth(event);
-      if (signedIn && wasGuest) {
-        for (const key of ["addresses", "address", "cart", "favorites"]) {
-          const guestValue = readLocal(storageKey(key, "guest"), undefined);
-          if (guestValue !== undefined && stored(key, undefined) === undefined) write(key, guestValue);
-          localStorage.removeItem(storageKey(key, "guest"));
-        }
-      }
-      state.orders = undefined;
-      render();
-      notify(signedIn ? "로그인했습니다." : "가입 확인 메일에서 이메일 인증을 완료해 주세요.");
-    }
     if (form.id === "review-form") {
-      await api("delivery_reviews", {}, { method: "POST", body: { order_id: route.value, rating: Number(values.rating), body: values.body.trim() } });
+      await demo("review", { order_id: route.value, rating: Number(values.rating), body: values.body.trim() });
       back();
       await fetchActivity();
       notify("리뷰를 등록했습니다.");
@@ -422,8 +423,8 @@ screen.addEventListener("submit", event => {
 });
 
 try {
-  await receiveSession();
   await catalog();
+  syncCart();
   if (new URLSearchParams(location.search).get("category") === "chicken") open("category", "chicken");
   else render(true);
 } catch (error) {

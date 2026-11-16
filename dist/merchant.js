@@ -1,11 +1,12 @@
-import { api, authForm, date, esc, receiveSession, rpc, session, signOut, statusLabels, submitAuth, won } from "./db.js";
+import { date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 
-const storeId = "alley-chicken";
+let storeId = readLocal("seoul-demo-store", "G0427");
+let catalog = { stores: [], menus: [] };
+let allOrders = [];
 const headings = { home: "홈", orders: "주문 내역", menu: "메뉴 관리", sales: "매출", reviews: "리뷰 관리" };
 const content = document.querySelector("#dashboard-content");
 const message = document.querySelector("#merchant-message");
 let tab = "home";
-let allowed = false;
 let orders = [];
 let menus = [];
 let editing;
@@ -18,13 +19,15 @@ const dayKey = value => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
 const action = (label, mode, value = "", style = "secondary") => '<button class="' + style + '" data-mode="' + mode + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
 
+function selectStore() {
+  if (!catalog.stores.some(store => store.id === storeId)) storeId = catalog.stores[0]?.id;
+  orders = allOrders.filter(order => order.store_id === storeId);
+  menus = catalog.menus.filter(item => item.store_id === storeId);
+}
+
 async function load() {
-  allowed = Boolean(session() && await rpc("manages_delivery_store", { target: storeId }));
-  if (!allowed) { orders = []; menus = []; return; }
-  [orders, menus] = await Promise.all([
-    api("delivery_orders", { select: "*,delivery_reviews(rating,body,reply,created_at)", store_id: "eq." + storeId, order: "created_at.desc" }),
-    api("menu_items", { store_id: "eq." + storeId, order: "id" })
-  ]);
+  [catalog, allOrders] = await Promise.all([demo("catalog"), demo("orders")]);
+  selectStore();
 }
 
 function controls(order) {
@@ -38,7 +41,7 @@ function controls(order) {
 
 function orderTable(rows) {
   if (!rows.length) return empty("해당하는 주문이 없습니다.");
-  return '<div class="table-wrap"><table><thead><tr><th>주문 시각</th><th>메뉴·배달 주소</th><th>결제 예정 금액</th><th>상태</th><th>주문 처리</th></tr></thead><tbody>' +
+  return '<div class="table-wrap"><table><thead><tr><th>주문 시각</th><th>메뉴·배달 주소</th><th>시연 주문 금액</th><th>상태</th><th>주문 처리</th></tr></thead><tbody>' +
     rows.map(order => '<tr><td>' + date(order.created_at) + '<small>#' + order.id.slice(0, 8) +
     '</small></td><td><strong>' + order.items.map(item => esc(item.name) + " × " + item.quantity).join(" · ") +
     '</strong><small>' + esc(order.address) + '</small></td><td>' + won(order.total) +
@@ -55,7 +58,10 @@ function home() {
   const pending = orders.filter(order => order.status === "pending");
   const delivering = orders.filter(order => ["accepted", "delivering"].includes(order.status));
   const today = salesFor(day => day === dayKey(Date.now()));
-  return '<div class="dash-stats"><article><span>접수 대기</span><strong>' + pending.length +
+  const shop = catalog.stores.find(store => store.id === storeId);
+  const info = shop ? '<section class="panel"><h2>가게 정보</h2><p>' + esc(shop.name) + ' · ' + esc(shop.category) +
+    ' · ' + esc(shop.district) + ' · 배달비 ' + won(shop.delivery_fee) + '</p></section>' : "";
+  return info + '<div class="dash-stats"><article><span>접수 대기</span><strong>' + pending.length +
     '건</strong></article><article><span>조리·배달 중</span><strong>' + delivering.length +
     '건</strong></article><article><span>오늘 메뉴 매출</span><strong>' + won(today.sum) +
     '</strong></article></div><section class="panel"><h2>신규 주문</h2>' + orderTable(pending) +
@@ -129,21 +135,18 @@ function reviews() {
 
 function render() {
   document.querySelector("#dashboard-title").textContent = headings[tab];
-  document.querySelector("#dashboard-actions").innerHTML = session() ?
-    (allowed ? action("새로고침", "refresh") : "") + action("로그아웃", "logout") : "";
+  const orderStores = new Set(allOrders.map(order => order.store_id));
+  const sorted = [...catalog.stores].sort((a, b) => Number(orderStores.has(b.id)) - Number(orderStores.has(a.id)));
+  document.querySelector("#dashboard-actions").innerHTML =
+    '<select aria-label="시연 가게 선택" id="demo-store">' + sorted.map(store =>
+      '<option value="' + esc(store.id) + '"' + (store.id === storeId ? ' selected' : '') +
+      '>' + esc(store.name + " · " + store.district) + (orderStores.has(store.id) ? " · 주문 있음" : "") + '</option>').join("") +
+    '</select>' + action("새로고침", "refresh");
+  document.querySelector(".sidebar-shop strong").textContent = catalog.stores.find(store => store.id === storeId)?.name || "가게를 불러오는 중";
   document.querySelectorAll("[data-tab]").forEach(node => {
     if (node.dataset.tab === tab) node.setAttribute("aria-current", "page");
     else node.removeAttribute("aria-current");
   });
-  if (!session()) {
-    content.innerHTML = '<section class="panel login-panel"><h2>사장님 로그인</h2>' + authForm(true) +
-      '<p class="muted">앱 가입이 처음이면 주문자 화면의 마이에서 이메일로 가입해 주세요.</p></section>';
-    return;
-  }
-  if (!allowed) {
-    content.innerHTML = '<section class="panel">' + empty("이 계정에는 서초 골목통닭의 관리 권한이 없습니다.") + '</section>';
-    return;
-  }
   content.innerHTML = ({ home, orders: history, menu, sales, reviews })[tab]();
 }
 
@@ -166,20 +169,19 @@ document.addEventListener("click", event => {
   if (control.dataset.tab) { tab = control.dataset.tab; render(); return; }
   const { mode, value } = control.dataset;
   void run(async () => {
-    if (mode === "logout") { await signOut(); allowed = false; }
     if (mode === "refresh") await load();
     if (mode === "page") page = Number(value);
-    if (mode === "edit") editing = Number(value);
+    if (mode === "edit") editing = value;
     if (mode === "cancel-edit") editing = undefined;
     if (mode === "status") {
       const [target, next_status] = value.split("/");
-      await rpc("change_delivery_order", { target, next_status });
+      await demo("state", { order_id: target, next_status });
       await load();
       message.textContent = "주문 상태를 변경했습니다.";
     }
     if (mode === "delete") {
       if (!window.confirm("이 메뉴를 삭제할까요? 이전 주문 기록에는 메뉴가 남습니다.")) return;
-      await api("menu_items", { id: "eq." + value, store_id: "eq." + storeId }, { method: "DELETE" });
+      await demo("remove_menu", { target: storeId, id: value });
       editing = undefined;
       await load();
       message.textContent = "메뉴를 삭제했습니다.";
@@ -189,7 +191,15 @@ document.addEventListener("click", event => {
   }, control);
 });
 
-content.addEventListener("change", event => {
+document.addEventListener("change", event => {
+  if (event.target.id === "demo-store") {
+    storeId = event.target.value;
+    saveLocal("seoul-demo-store", storeId);
+    editing = undefined;
+    page = 0;
+    selectStore();
+    render();
+  }
   if (event.target.id === "order-filter") { orderFilter = event.target.value; page = 0; render(); }
   if (event.target.id === "sales-month" && event.target.value) { monthFilter = event.target.value; render(); }
 });
@@ -199,17 +209,10 @@ content.addEventListener("submit", event => {
   const form = event.target;
   const raw = new FormData(form);
   void run(async () => {
-    if (form.id === "auth-form") {
-      await submitAuth(event);
-      await load();
-    }
     if (form.id === "menu-form") {
       const item = { name: raw.get("name").trim(), description: raw.get("description").trim(), price: Number(raw.get("price")), available: raw.has("available") };
       if (!item.name) throw new Error("메뉴명을 입력해 주세요.");
-      await api("menu_items", editing ? { id: "eq." + editing, store_id: "eq." + storeId } : {}, {
-        method: editing ? "PATCH" : "POST",
-        body: editing ? item : { ...item, store_id: storeId }
-      });
+      await demo("save_menu", { target: storeId, id: editing, ...item });
       editing = undefined;
       await load();
       message.textContent = "메뉴를 저장했습니다.";
@@ -217,7 +220,7 @@ content.addEventListener("submit", event => {
     if (form.classList.contains("reply-form")) {
       const reply = raw.get("reply").trim();
       if (!reply) throw new Error("답변 내용을 입력해 주세요.");
-      await api("delivery_reviews", { order_id: "eq." + form.dataset.review }, { method: "PATCH", body: { reply } });
+      await demo("reply", { order_id: form.dataset.review, body: reply });
       await load();
       message.textContent = "답변을 저장했습니다.";
     }
@@ -225,5 +228,5 @@ content.addEventListener("submit", event => {
   }, event.submitter);
 });
 
-try { await receiveSession(); await load(); render(); }
+try { await load(); render(); }
 catch (error) { render(); message.textContent = error.message; }
