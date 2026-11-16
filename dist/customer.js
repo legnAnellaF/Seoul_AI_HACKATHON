@@ -1,4 +1,5 @@
 import { date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
+import { addCartMenu, readCart as cart, writeCart } from "./cart.js";
 
 const screen = document.querySelector("#screen");
 const bar = document.querySelector("#checkout-bar");
@@ -10,11 +11,14 @@ let route = { name: "home" };
 let previous = [];
 let busy = false;
 let messageTimer;
+const entryParams = new URLSearchParams(location.search);
+const linkedStore = entryParams.get("store");
+const linkedCart = entryParams.get("view") === "cart";
+let fromRecommendation = entryParams.get("from") === "recommend" && !!(linkedStore || linkedCart);
 
 const storageKey = name => "seoul-demo-" + name;
 const stored = (name, fallback) => readLocal(storageKey(name), fallback);
 const write = (name, value) => saveLocal(storageKey(name), value);
-const cart = () => stored("cart", []);
 const favorites = () => stored("favorites", []);
 const addresses = () => stored("addresses", []);
 const activeAddress = () => addresses().find(item => item.id === stored("address", null)) || { road: "서울 서초구 시연 주소" };
@@ -37,7 +41,7 @@ function notify(text) {
 }
 
 function open(name, value, tab = false) {
-  if (tab) previous = [];
+  if (tab) { previous = []; fromRecommendation = false; }
   else previous.push(route);
   route = { name, value };
   state.listLimit = 30;
@@ -49,6 +53,13 @@ function open(name, value, tab = false) {
 }
 
 function back() {
+  if (!previous.length && fromRecommendation) {
+    const referrer = document.referrer && new URL(document.referrer);
+    const recommendation = new URL("recommend.html", location.href);
+    if (referrer && referrer.origin === recommendation.origin && referrer.pathname === recommendation.pathname && history.length > 1) history.back();
+    else location.replace(recommendation.href);
+    return;
+  }
   route = previous.pop() ?? { name: "home" };
   state.listLimit = 30;
   render(true);
@@ -181,7 +192,7 @@ function detail() {
     '<section class="menu-section"><div class="pane"><span class="active-pill">전체 메뉴</span><h2>메뉴</h2></div>' +
     (items.length ? items.map(item => {
       const quantity = cart().find(row => row.id === item.id)?.quantity;
-      return '<article class="menu-row"><div><h3>' + esc(item.name) + '</h3><p class="muted">' + esc(item.description) +
+      return '<article class="menu-row" data-menu-id="' + esc(item.id) + '"><div><h3>' + esc(item.name) + '</h3><p class="muted">' + esc(item.description) +
         '</p><strong>' + won(item.price) + '</strong>' + (quantity ? '<small class="in-cart">담은 수량 ' + quantity + '</small>' : '') +
         '</div><div class="menu-image media-placeholder"><button class="menu-add" aria-label="' + esc(item.name + " 담기") +
         '" data-act="add" data-value="' + esc(item.id) + '">+</button></div></article>';
@@ -190,7 +201,7 @@ function detail() {
 
 function syncCart() {
   const menuById = new Map(state.menus.map(item => [item.id, item]));
-  write("cart", cart().flatMap(row => {
+  writeCart(cart().flatMap(row => {
     const item = menuById.get(row.id);
     return item ? [{ ...row, ...item }] : [];
   }));
@@ -284,17 +295,14 @@ function render(reset = false) {
 function updateCart(id, change) {
   const rows = cart();
   const row = rows.find(item => item.id === id);
-  if (change === "remove" || (change === "minus" && row?.quantity === 1)) write("cart", rows.filter(item => item.id !== id));
+  if (change === "add") {
+    const item = state.menus.find(menu => menu.id === id);
+    addCartMenu(item, getStore(item?.store_id));
+  } else if (change === "remove" || (change === "minus" && row?.quantity === 1)) writeCart(rows.filter(item => item.id !== id));
   else if (row) {
     if (change !== "minus" && row.quantity >= 20) return notify("메뉴당 최대 20개까지 담을 수 있습니다.");
     row.quantity += change === "minus" ? -1 : 1;
-    if (change === "add") row.selected = true;
-    write("cart", rows);
-  } else {
-    const item = state.menus.find(menu => menu.id === id);
-    if (!item) return;
-    const store = getStore(item.store_id);
-    write("cart", [...rows, { ...item, store_name: store.name, quantity: 1, selected: true }]);
+    writeCart(rows);
   }
   render();
   if (change === "add") {
@@ -324,7 +332,7 @@ async function checkout() {
   write("checkout-attempt", { signature, key });
   await demo("place", { ...payload, retry_key: key });
   saveLocal("seoul-demo-store", idList[0]);
-  write("cart", cart().filter(item => !rows.some(row => row.id === item.id)));
+  writeCart(cart().filter(item => !rows.some(row => row.id === item.id)));
   write("checkout-attempt", {});
   state.orders = undefined;
   open("orders", undefined, true);
@@ -395,7 +403,7 @@ screen.addEventListener("input", event => {
 screen.addEventListener("change", event => {
   if (!event.target.matches("[data-select]")) return;
   const id = event.target.dataset.select;
-  write("cart", cart().map(item => item.id === id ? { ...item, selected: event.target.checked } : item));
+  writeCart(cart().map(item => item.id === id ? { ...item, selected: event.target.checked } : item));
   render();
   screen.querySelector('[data-select="' + id + '"]')?.focus({ preventScroll: true });
 });
@@ -425,10 +433,13 @@ screen.addEventListener("submit", event => {
 try {
   await catalog();
   syncCart();
-  const params = new URLSearchParams(location.search);
-  const linked = getStore(params.get("store"));
-  if (linked) open("store", linked.id);
-  else if (params.get("category") === "chicken") open("category", "chicken");
+  if (fromRecommendation) {
+    route = linkedStore ? { name: "store", value: linkedStore } : { name: "cart" };
+    render(true);
+    const linkedMenu = entryParams.get("menu");
+    if (linkedStore && linkedMenu) screen.querySelector('[data-menu-id="' + CSS.escape(linkedMenu) + '"]')?.scrollIntoView({ block: "center" });
+  } else if (getStore(linkedStore)) open("store", linkedStore);
+  else if (entryParams.get("category") === "chicken") open("category", "chicken");
   else render(true);
 } catch (error) {
   render(true);

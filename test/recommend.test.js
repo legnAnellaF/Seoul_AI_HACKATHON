@@ -168,3 +168,25 @@ test('category selection clears the missing dish even when reselecting the curre
   const changed = await engine.handle(category.state, { type: 'apply', cond: { menu: '중식' } }, noGemini);
   assert.ok(cards(changed).length && cards(changed).every(id => id.startsWith('gangnam-chinese')));
 });
+
+test('acknowledges a previous recommendation without re-running the search', async () => {
+  const engine = createEngine(snapshot);
+  const first = await textTurn(engine, null, '강남구에서 피자 추천해줘');
+  assert.ok(first.reply.cards.length >= 2);
+  const mustNotCallAI = new Proxy({}, { get() { assert.fail('confirmation must not perform a new search'); } });
+  const ambiguous = await textTurn(engine, first, '마음에 들어', mustNotCallAI);
+  assert.match(ambiguous.reply.text, /어느 추천이 마음에 들었나요/);
+  const chosen = await textTurn(engine, ambiguous, '2번 가게가 마음에 들어', mustNotCallAI);
+  const second = first.reply.cards[1];
+  assert.equal(chosen.reply.selected.menuId, second.menuId);
+  assert.equal(chosen.reply.selected.storeId, second.storeId);
+  assert.match(chosen.reply.text, /장바구니/);
+  assert.deepEqual(chosen.state.cond, first.state.cond);
+  const again = await textTurn(engine, chosen, '그걸로 할게', mustNotCallAI);
+  assert.equal(again.reply.selected.menuId, second.menuId);
+  const byMenu = await textTurn(engine, first, '버섯 피자가 좋아', mustNotCallAI);
+  assert.equal(byMenu.reply.selected.menu, '버섯 피자');
+  const switched = await textTurn(engine, chosen, '마음에 드는데 중식으로 바꿔줘');
+  assert.equal(switched.state.cond.menu, '중식');
+  assert.equal(switched.reply.selected, undefined);
+});

@@ -14,6 +14,8 @@
   .app { max-width: 440px; margin: 0 auto; min-height: 100dvh; display: flex; flex-direction: column; background: var(--surface); box-shadow: 0 0 0 1px var(--line); }
   header { position: sticky; top: 0; z-index: 2; background: var(--surface); border-bottom: 1px solid var(--line); padding: 12px 16px 10px; }
   .top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .top-actions { display: flex; align-items: center; flex-wrap: wrap; justify-content: flex-end; gap: 5px; }
+  .cart-link { color: var(--brand); font-size: 12px; font-weight: 600; white-space: nowrap; }
   h1 { font-size: 17px; margin: 0; }
   .dong { font-size: 13px; color: var(--brand); font-weight: 600; }
   .remain { font-size: 12px; color: var(--muted); }
@@ -55,6 +57,10 @@
   .category-select { max-width: 125px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
   .source { margin: 0; font-size: 12px; color: var(--muted); }
   .order { text-decoration: none; text-align: center; }
+  .card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
+  .card-actions .order { background: var(--brand-soft); color: var(--brand); }
+  .card-actions .btn { font-size: 13px; font-weight: 600; }
+  .cart-status { margin: 0; color: var(--muted); font-size: 13px; }
   form { position: sticky; bottom: 0; display: flex; gap: 8px; padding: 10px 16px 16px; border-top: 1px solid var(--line); background: var(--surface); }
   input { flex: 1; min-width: 0; border: 1px solid var(--line); border-radius: 12px; padding: 10px 12px; font: inherit; background: var(--surface); color: var(--ink); }
   form button { border: 0; border-radius: 12px; padding: 0 16px; background: var(--brand); color: #fff; font: inherit; font-weight: 600; cursor: pointer; }
@@ -70,7 +76,10 @@
   <header>
     <div class="top">
       <h1><a href="index.html" aria-label="홈으로" style="color:inherit;text-decoration:none">‹</a> 메뉴 추천 <span class="dong" id="dong"></span></h1>
-      <select id="category" class="category-select" aria-label="추천 카테고리" hidden></select>
+      <div class="top-actions">
+        <select id="category" class="category-select" aria-label="추천 카테고리" hidden></select>
+        <a id="basket-link" class="cart-link" href="index.html?view=cart&amp;from=recommend">장바구니</a>
+      </div>
     </div>
     <p class="source" id="source">합성 데이터 기준 · 음식 취향만 입력해 주세요.</p>
     <div class="remain" id="remain"></div>
@@ -82,14 +91,37 @@
     <button>보내기</button>
   </form>
 </div>
-<script>
+<script type="module">
+import { demo, esc, won } from './db.js';
+import { addCartMenu, readCart } from './cart.js';
+
 const $ = id => document.getElementById(id);
 const log = $('log');
-let state = null, busy = false, regionSelect;
+const SESSION_KEY = 'seoul-recommend-conversation';
+let saved;
+try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { saved = null; }
+let state = saved?.state ?? null, busy = false, regionSelect, sourceProvider = saved?.sourceProvider;
+const turns = Array.isArray(saved?.turns) ? saved.turns.slice(-40) : [];
 const optionButtons = new Set();
-const esc = s => String(s ?? '').replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
-const won = n => n.toLocaleString('ko-KR') + '원';
 const scroll = () => log.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
+
+function remember(turn) {
+  turns.push(turn);
+  if (turns.length > 40) turns.shift();
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ state, turns, sourceProvider })); } catch { /* The live chat still works without storage. */ }
+}
+
+function updateBasketLink() {
+  const count = readCart().reduce((sum, menu) => sum + menu.quantity, 0);
+  $('basket-link').textContent = count ? `장바구니 ${count}` : '장바구니';
+}
+
+function updateHeader() {
+  if (sourceProvider) $('source').textContent = (sourceProvider === 'gemini' ? 'Gemini 도움으로 조건 분석' : '합성 DB · 기본 추천') + ' · 실제 영업·배달 가능 여부는 미확인';
+  $('dong').textContent = [state?.dong, state?.neighborhood].filter(Boolean).join(' ');
+  if (regionSelect) regionSelect.value = state?.dong || '';
+  $('category').hidden = !state?.dong || $('category').options.length < 2;
+}
 
 function add(html, cls = '') {
   const el = document.createElement('div');
@@ -100,13 +132,16 @@ function add(html, cls = '') {
   return el;
 }
 
-function buttons(list) {
+function buttons(list, historical = false) {
   const box = add('', 'btns');
   for (const b of list) {
     const el = document.createElement('button');
     el.className = 'btn' + (b.ghost ? ' ghost' : '');
     el.textContent = b.label;
-    if (b.action?.type === 'option') optionButtons.add(el);
+    if (b.action?.type === 'option') {
+      if (historical) el.disabled = true;
+      else optionButtons.add(el);
+    }
     el.onclick = async () => {
       if (busy) return;
       if (b.action?.type === 'apply' && b.action?.cond?.menu) {
@@ -146,6 +181,8 @@ function renderChips(chips = []) {
 }
 
 function card(c, i) {
+  const params = new URLSearchParams({ store: c.storeId, from: 'recommend' });
+  if (c.menuId) params.set('menu', c.menuId);
   const tags = [
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
@@ -153,17 +190,56 @@ function card(c, i) {
   ].filter(Boolean).join('');
   return `<div class="card">
     <div class="head"><span class="name">${esc(c.name)}</span><span class="rank">${c.score ? (i + 1) + '위 · ' : ''}${c.rating ? '★ ' + esc(c.rating) : '평점 정보 없음'}</span></div>
-    <div class="menu">${esc(c.menu)}${c.qty ? ' × ' + c.qty : ''}</div>
+    <div class="menu">${esc(c.menu)}${c.qty > 1 ? ' × ' + esc(c.qty) : ''}</div>
     <div class="total">${won(c.total)} <span class="rank">예상 총액 · 배달비 포함</span></div>
     <div class="checks">${c.checks.map(x => '✓ ' + esc(x)).join(' ')}</div>
     ${tags ? `<div class="tags">${tags}</div>` : ''}
     ${c.reason ? `<div class="reason">${esc(c.reason)}</div>` : ''}
     ${c.quote ? `<div class="quote"><small>사장님 설명</small>“${esc(c.quote)}”</div>` : ''}
-    <a class="order" href="index.html?store=${encodeURIComponent(c.storeId)}">가게·메뉴 보기</a>
+    <div class="card-actions">
+      <a class="order" href="index.html?${esc(params.toString())}">가게·메뉴 보기</a>
+      ${c.menuId ? '<button type="button" class="btn add-recommendation">장바구니 담기</button>' : ''}
+    </div>
+    <p class="cart-status" role="status" hidden></p>
   </div>`;
 }
 
-function render(r) {
+let addingMenu = false;
+function renderCards(cards) {
+  const wrap = add(cards.map(card).join(''), 'cards');
+  [...wrap.children].forEach((element, index) => {
+    const button = element.querySelector('.add-recommendation');
+    if (!button) return;
+    const item = cards[index];
+    const status = element.querySelector('.cart-status');
+    button.setAttribute('aria-label', `${item.menu} 장바구니 담기`);
+    button.onclick = async () => {
+      if (addingMenu) return;
+      addingMenu = true;
+      button.disabled = true;
+      status.hidden = false;
+      status.textContent = '메뉴를 확인하고 있어요…';
+      try {
+        const { stores, menus } = await demo('catalog');
+        const menu = menus.find(row => row.id === item.menuId && row.store_id === item.storeId);
+        const store = stores.find(row => row.id === item.storeId);
+        const quantity = item.qty || 1;
+        const total = addCartMenu(menu, store, quantity);
+        const currentPrice = menu.price * quantity + store.delivery_fee;
+        status.textContent = `${quantity}개 담았어요. 장바구니에 총 ${total}개 있어요.` +
+          (currentPrice !== item.total ? ` 현재 ${quantity}개의 배달비 포함 예상 금액은 ${won(currentPrice)}이에요.` : '');
+        updateBasketLink();
+      } catch (error) {
+        status.textContent = error.message || '장바구니에 담지 못했어요.';
+      } finally {
+        addingMenu = false;
+        button.disabled = false;
+      }
+    };
+  });
+}
+
+function render(r, historical = false) {
   renderChips(r.chips);
   $('remain').textContent = '';
   if (r.remaining != null) $('remain').innerHTML = `남은 가게 <b>${r.remaining}</b>곳`;
@@ -176,11 +252,12 @@ function render(r) {
   }
   if (r.text) add(esc(r.text), 'msg bot');
   if (r.cards?.length) {
-    add(r.cards.map(card).join(''), 'cards');
+    renderCards(r.cards);
     if (!r.lookup) add('광고 없이 조건으로만 골랐어요', 'noad');
   }
+  if (r.selected) renderCards([r.selected]);
   if (r.followUp) add(esc(r.followUp), 'msg bot');
-  if (r.buttons?.length) buttons(r.buttons);
+  if (r.buttons?.length) buttons(r.buttons, historical);
 }
 
 async function send(action, echo) {
@@ -193,21 +270,26 @@ async function send(action, echo) {
     const res = await fetch('/api/recommend', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state, action }) });
     const data = await res.json();
     wait.remove();
-    if (!res.ok) { add(esc(data.error || '오류가 났어요.'), 'msg bot'); return; }
+    if (!res.ok) {
+      const error = data.error || '오류가 났어요.';
+      add(esc(error), 'msg bot');
+      remember({ echo, error });
+      return;
+    }
     if (state?.pending !== data.state?.pending && JSON.stringify(state?.pending) !== JSON.stringify(data.state?.pending)) {
       for (const button of optionButtons) button.disabled = true;
       optionButtons.clear();
     }
     state = data.state;
-    $('source').textContent = (data.provider === 'gemini' ? 'Gemini 도움으로 조건 분석' : '합성 DB · 기본 추천') + ' · 실제 영업·배달 가능 여부는 미확인';
-    $('dong').textContent = [state.dong, state.neighborhood].filter(Boolean).join(' ');
-    if (regionSelect) regionSelect.value = state.dong || '';
-    $('category').hidden = !state.dong || $('category').options.length < 2;
+    if (!data.reply.keepSource) sourceProvider = data.provider;
+    updateHeader();
     render(data.reply);
+    remember({ echo, reply: data.reply });
     return true;
   } catch {
     wait.remove();
     add('서버에 연결하지 못했어요.', 'msg bot');
+    remember({ echo, error: '서버에 연결하지 못했어요.' });
   } finally { busy = false; }
 }
 
@@ -221,6 +303,7 @@ $('form').onsubmit = e => {
 
 async function chooseRegion() {
   const box = add('지역을 불러오는 중…', 'msg bot');
+  const row = add('', 'regions');
   try {
     const response = await fetch('/api/recommend');
     const data = await response.json();
@@ -234,7 +317,6 @@ async function chooseRegion() {
       if (value && !busy) void send({ type: 'apply', cond: { menu: value } }, value);
     };
     box.textContent = '어느 지역에서 찾아볼까요?';
-    const row = add('', 'regions');
     const select = document.createElement('select');
     regionSelect = select;
     select.setAttribute('aria-label', '추천 지역');
@@ -249,17 +331,27 @@ async function chooseRegion() {
       select.disabled = false;
     };
     row.appendChild(select);
+    updateHeader();
   } catch {
     box.textContent = '지역을 불러오지 못했어요.';
     const retry = document.createElement('button');
     retry.className = 'btn';
     retry.textContent = '다시 시도';
-    retry.onclick = () => { box.remove(); retry.remove(); void chooseRegion(); };
-    log.appendChild(retry);
+    retry.onclick = () => { box.remove(); row.remove(); void chooseRegion(); };
+    row.appendChild(retry);
   }
 }
 
 void chooseRegion();
+const activeReply = turns.findLastIndex(turn => turn.reply);
+turns.forEach(({ echo, reply, error }, index) => {
+  if (echo) add(esc(echo), 'msg user');
+  if (reply) render(reply, index !== activeReply || !state?.pending);
+  else if (error) add(esc(error), 'msg bot');
+});
+updateHeader();
+updateBasketLink();
+window.addEventListener('pageshow', updateBasketLink);
 </script>
 </body>
 </html>
