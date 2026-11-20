@@ -185,6 +185,7 @@ function card(c, i) {
   const params = new URLSearchParams({ store: c.storeId, from: 'recommend' });
   if (c.menuId) params.set('menu', c.menuId);
   const tags = [
+    c.foodLabel && `<span class="tag">${esc(c.foodLabel)} 후보</span>`,
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
     c.budgetNote && `<span class="tag partial">${esc(c.budgetNote)}</span>`,
@@ -244,7 +245,7 @@ function renderCards(cards) {
 function render(r, historical = false) {
   renderChips(r.chips);
   $('remain').textContent = '';
-  if (r.remaining != null) $('remain').innerHTML = `남은 가게 <b>${r.remaining}</b>곳`;
+  if (r.remaining != null) $('remain').innerHTML = `아직 보지 않은 가게 <b>${r.remaining}</b>곳`;
   if (r.banner) {
     const b = add(`<span>${esc(r.banner)}</span>`, 'banner');
     const btn = document.createElement('button');

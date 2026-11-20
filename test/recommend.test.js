@@ -121,6 +121,44 @@ test('searches a group budget without a category and offers the nearest totals',
   assert.equal(sameDistrict.state.cond.budget, 40000);
 });
 
+test('keeps both foods in the first results and lists all six unseen stores on request', async () => {
+  const chickenStores = Array.from({ length: 4 }, (_, index) => ({ id: `chicken-${index}`, category: '치킨' }));
+  const snackStores = Array.from({ length: 5 }, (_, index) => ({ id: `snack-${index}`, category: '분식' }));
+  const stores = [...chickenStores, ...snackStores].map(store => ({
+    ...store, name: store.id, region: '서초구', dong: '서초4동', tip: 1000, rating: 4.5,
+  }));
+  const menus = stores.map(store => ({
+    id: `${store.id}-1`, store: store.id, name: store.category === '치킨' ? '후라이드치킨' : '떡볶이',
+    price: store.category === '치킨' ? 18000 : 5500, desc: '',
+  }));
+  const engine = createEngine({ stores, menus });
+  const first = await textTurn(engine, null, '치킨이랑 떡볶이를 같이 먹고 싶어');
+  assert.equal(first.state.dong, '서울 전체');
+  assert.deepEqual(first.reply.cards.map(card => card.foodLabel), ['치킨', '떡볶이', '치킨']);
+  assert.equal(first.reply.remaining, 6);
+  assert.match(first.reply.buttons[0].label, /6곳 더 보기/);
+  const rest = await textTurn(engine, first, '다른 6곳도 알려줘');
+  assert.equal(cards(rest).length, 6);
+  assert.equal(new Set([...cards(first), ...cards(rest)]).size, 9);
+  assert.equal(rest.reply.remaining, 0);
+  assert.deepEqual(rest.state.cond.foods, first.state.cond.foods);
+  const exhausted = await textTurn(engine, rest, '나머지 후보도 보여줘');
+  assert.match(exhausted.reply.text, /더 보여드릴 후보가 없어요/);
+  const switched = await textTurn(engine, rest, '떡볶이 말고 치킨으로 바꿔줘');
+  assert.equal(switched.state.cond.menu, '치킨');
+  assert.deepEqual(switched.state.cond.foods, []);
+});
+
+test('shows unseen single-food recommendations when the user asks for a count', async () => {
+  const engine = createEngine(snapshot);
+  const first = await textTurn(engine, null, '서초구에서 치킨 추천해줘');
+  assert.equal(first.reply.remaining, 1);
+  const rest = await textTurn(engine, first, '나머지 1곳도 보여줘');
+  assert.equal(cards(rest).length, 1);
+  assert.equal(rest.reply.remaining, 0);
+  assert.ok(!cards(first).includes(cards(rest)[0]));
+});
+
 test('places a grounded follow-up after the results and discards invented catalog entries', async () => {
   const engine = createEngine(snapshot);
   const ai = {
