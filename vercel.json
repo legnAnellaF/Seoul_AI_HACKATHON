@@ -1,5 +1,6 @@
 {
   "framework": null,
+  "git": { "deploymentEnabled": { "main": true } },
   "outputDirectory": "dist",
   "functions": { "api/recommend.js": { "maxDuration": 30 } }
 }

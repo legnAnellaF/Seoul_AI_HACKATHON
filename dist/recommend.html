@@ -58,7 +58,6 @@
   .regions { max-width: 100%; }
   .regions select { width: 100%; border: 1px solid var(--line); border-radius: 10px; padding: 9px; background: var(--surface); color: var(--ink); font: inherit; }
   .category-select { max-width: 125px; border: 1px solid var(--line); border-radius: 8px; padding: 4px 6px; background: var(--surface); color: var(--ink); font: inherit; font-size: 12px; }
-  .source { margin: 0; font-size: 12px; color: var(--muted); }
   .order { text-decoration: none; text-align: center; }
   .card-actions { display: grid; grid-template-columns: 1fr 1fr; gap: 6px; }
   .card-actions .order { background: var(--brand-soft); color: var(--brand); }
@@ -85,7 +84,6 @@
         <a id="basket-link" class="cart-link" href="index.html?view=cart&amp;from=recommend">장바구니</a>
       </div>
     </div>
-    <p class="source" id="source">합성 데이터 기준 · 음식 취향만 입력해 주세요.</p>
     <div class="remain" id="remain"></div>
     <div class="chips" id="chips"></div>
   </header>
@@ -104,7 +102,7 @@ const log = $('log');
 const SESSION_KEY = 'seoul-recommend-conversation';
 let saved;
 try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { saved = null; }
-let state = saved?.state ?? null, busy = false, regionSelect, sourceProvider = saved?.sourceProvider;
+let state = saved?.state ?? null, busy = false, regionSelect;
 const turns = Array.isArray(saved?.turns) ? saved.turns.slice(-40) : [];
 const optionButtons = new Set();
 const scroll = () => log.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
@@ -112,7 +110,7 @@ const scroll = () => log.lastElementChild?.scrollIntoView({ behavior: 'smooth', 
 function remember(turn) {
   turns.push(turn);
   if (turns.length > 40) turns.shift();
-  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ state, turns, sourceProvider })); } catch { /* The live chat still works without storage. */ }
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ state, turns })); } catch { /* The live chat still works without storage. */ }
 }
 
 function updateBasketLink() {
@@ -121,7 +119,6 @@ function updateBasketLink() {
 }
 
 function updateHeader() {
-  if (sourceProvider) $('source').textContent = (sourceProvider === 'gemini' ? 'Gemini 도움으로 조건 분석' : '합성 DB · 기본 추천') + ' · 실제 영업·배달 가능 여부는 미확인';
   $('dong').textContent = [state?.dong, state?.neighborhood].filter(Boolean).join(' ');
   if (regionSelect) regionSelect.value = state?.dong || '';
   $('category').hidden = !state?.dong || $('category').options.length < 2;
@@ -190,6 +187,7 @@ function card(c, i) {
   const tags = [
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
+    c.budgetNote && `<span class="tag partial">${esc(c.budgetNote)}</span>`,
     c.partial && `<span class="tag partial">일부 조건만 맞아요</span>`,
   ].filter(Boolean).join('');
   return `<div class="card">
@@ -285,7 +283,6 @@ async function send(action, echo) {
       optionButtons.clear();
     }
     state = data.state;
-    if (!data.reply.keepSource) sourceProvider = data.provider;
     updateHeader();
     render(data.reply);
     remember({ echo, reply: data.reply });

@@ -96,7 +96,29 @@ test('shows exact dishes, then explicitly labeled category alternatives for miss
   assert.deepEqual(cards(exactShop), ['gangnam-chinese']);
   const overBudget = await textTurn(engine, exact, '8천 원 미만');
   assert.match(overBudget.reply.text, /데이터는 있지만 현재 조건/);
-  assert.deepEqual(cards(overBudget), []);
+  assert.deepEqual(cards(overBudget), ['gangnam-chinese']);
+  assert.equal(overBudget.reply.cards[0].budgetNote, '예산보다 1,500원 높아요');
+  assert.ok(!overBudget.reply.cards[0].checks.includes('예산'));
+});
+
+test('searches a group budget without a category and offers the nearest totals', async () => {
+  const engine = createEngine({
+    stores: snapshot.stores.filter(store => store.category === '치킨'),
+    menus: snapshot.menus,
+  });
+  const result = await textTurn(engine, null, '5명이서 4만원에 배불리 먹고 싶어');
+  assert.equal(result.state.dong, '서울 전체');
+  assert.equal(result.state.cond.people, 5);
+  assert.equal(result.state.cond.budget, 40000);
+  assert.match(result.reply.text, /현재 조건.*예산에 가까운 대안/);
+  assert.deepEqual(result.reply.cards.map(card => [card.qty, card.total]), [[3, 49000], [3, 52000], [3, 55000]]);
+  assert.ok(result.reply.cards.every(card => card.partial && !card.checks.includes('예산')));
+  assert.equal(result.reply.cards[0].budgetNote, '예산보다 9,000원 높아요');
+  const confirmed = await textTurn(engine, result, '1번 메뉴가 마음에 들어');
+  assert.equal(confirmed.reply.selected.budgetNote, '예산보다 9,000원 높아요');
+  const sameDistrict = await textTurn(engine, result, '강남구에서 찾아줘');
+  assert.deepEqual(cards(sameDistrict), ['gangnam-chicken']);
+  assert.equal(sameDistrict.state.cond.budget, 40000);
 });
 
 test('places a grounded follow-up after the results and discards invented catalog entries', async () => {
