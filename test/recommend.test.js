@@ -111,7 +111,7 @@ test('searches a group budget without a category and offers the nearest totals',
   assert.equal(result.state.cond.people, 5);
   assert.equal(result.state.cond.budget, 40000);
   assert.match(result.reply.text, /현재 조건.*예산에 가까운 대안/);
-  assert.deepEqual(result.reply.cards.map(card => [card.qty, card.total]), [[3, 49000], [3, 52000], [3, 55000]]);
+  assert.deepEqual(result.reply.cards.map(card => [card.qty, card.total]), [[3, 49000], [3, 52000], [2, 55000]]);
   assert.ok(result.reply.cards.every(card => card.partial && !card.checks.includes('예산')));
   assert.equal(result.reply.cards[0].budgetNote, '예산보다 9,000원 높아요');
   const confirmed = await textTurn(engine, result, '1번 메뉴가 마음에 들어');
@@ -119,6 +119,38 @@ test('searches a group budget without a category and offers the nearest totals',
   const sameDistrict = await textTurn(engine, result, '강남구에서 찾아줘');
   assert.deepEqual(cards(sameDistrict), ['gangnam-chicken']);
   assert.equal(sameDistrict.state.cond.budget, 40000);
+});
+
+test('compares listed set portions and mixed meals with one delivery fee per store', async () => {
+  const engine = createEngine({
+    stores: [
+      { id: 'set-shop', name: '모둠중식', region: '강남구', dong: '역삼동', category: '중식', rating: 4.5, tip: 3000 },
+      { id: 'mix-shop', name: '골목반점', region: '강남구', dong: '삼성동', category: '중식', rating: 4.5, tip: 2000 },
+    ],
+    menus: [
+      { id: 'set', store: 'set-shop', name: '특선 세트 (3인분)', desc: '', price: 26000 },
+      { id: 'single', store: 'set-shop', name: '잡채밥', desc: '', price: 11000 },
+      { id: 'main', store: 'mix-shop', name: '해물짬뽕', desc: '2인분', price: 19000 },
+      { id: 'rice', store: 'mix-shop', name: '새우볶음밥', desc: '1인분', price: 10000 },
+      { id: 'drink', store: 'mix-shop', name: '콜라', desc: '', price: 1000 },
+    ],
+  });
+  const result = await textTurn(engine, null, '강남구에서 3명이서 3만2천원으로 중식 추천해줘');
+  assert.equal(result.reply.cards.length, 2);
+  const set = result.reply.cards.find(card => card.storeId === 'set-shop');
+  const mix = result.reply.cards.find(card => card.storeId === 'mix-shop');
+  assert.equal(set.qty, 1);
+  assert.equal(set.total, 29000);
+  assert.equal(set.setMenu, true);
+  assert.equal(set.portionNote, '3인분 표기 기준');
+  assert.equal(mix.total, 31000);
+  assert.deepEqual(mix.items.map(item => item.menuId).sort(), ['main', 'rice']);
+  const approved = await textTurn(engine, result, '골목반점이 마음에 들어');
+  assert.equal(approved.reply.selected.total, mix.total);
+  assert.deepEqual(approved.reply.selected.items, mix.items);
+  const exact = await textTurn(engine, null, '강남구에서 3명이서 3만2천원으로 짬뽕 추천해줘');
+  assert.equal(exact.reply.cards[0].menuId, 'main');
+  assert.ok(exact.reply.cards[0].items.some(item => item.menuId === 'rice'));
 });
 
 test('keeps both foods in the first results and lists all six unseen stores on request', async () => {

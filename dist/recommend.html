@@ -95,7 +95,7 @@
 </div>
 <script type="module">
 import { demo, esc, won } from './db.js';
-import { addCartMenu, readCart } from './cart.js';
+import { addCartMenus, readCart } from './cart.js';
 
 const $ = id => document.getElementById(id);
 const log = $('log');
@@ -186,6 +186,8 @@ function card(c, i) {
   if (c.menuId) params.set('menu', c.menuId);
   const tags = [
     c.foodLabel && `<span class="tag">${esc(c.foodLabel)} 후보</span>`,
+    c.setMenu && '<span class="tag">세트 메뉴</span>',
+    c.portionNote && `<span class="tag">${esc(c.portionNote)}</span>`,
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
     c.budgetNote && `<span class="tag partial">${esc(c.budgetNote)}</span>`,
@@ -193,7 +195,8 @@ function card(c, i) {
   ].filter(Boolean).join('');
   return `<div class="card">
     <div class="head"><span class="name">${esc(c.name)}</span><span class="rank">${c.score ? (i + 1) + '위 · ' : ''}${c.rating ? '★ ' + esc(c.rating) : '평점 정보 없음'}</span></div>
-    <div class="menu">${esc(c.menu)}${c.qty > 1 ? ' × ' + esc(c.qty) : ''}</div>
+    <div class="menu">${(c.items ?? [{ name: c.menu, qty: c.qty }]).map(line =>
+      esc(line.name) + (c.items || line.qty > 1 ? ' × ' + esc(line.qty) : '')).join(' + ')}</div>
     <div class="total">${won(c.total)} <span class="rank">예상 총액 · 배달비 포함</span></div>
     <div class="checks">${c.checks.map(x => '✓ ' + esc(x)).join(' ')}</div>
     ${tags ? `<div class="tags">${tags}</div>` : ''}
@@ -215,7 +218,7 @@ function renderCards(cards) {
     if (!button) return;
     const item = cards[index];
     const status = element.querySelector('.cart-status');
-    button.setAttribute('aria-label', `${item.menu} 장바구니 담기`);
+    button.setAttribute('aria-label', item.items ? '메뉴 조합 장바구니 담기' : `${item.menu} 장바구니 담기`);
     button.onclick = async () => {
       if (addingMenu) return;
       addingMenu = true;
@@ -224,13 +227,16 @@ function renderCards(cards) {
       status.textContent = '메뉴를 확인하고 있어요…';
       try {
         const { stores, menus } = await demo('catalog');
-        const menu = menus.find(row => row.id === item.menuId && row.store_id === item.storeId);
         const store = stores.find(row => row.id === item.storeId);
-        const quantity = item.qty || 1;
-        const total = addCartMenu(menu, store, quantity);
-        const currentPrice = menu.price * quantity + store.delivery_fee;
-        status.textContent = `${quantity}개 담았어요. 장바구니에 총 ${total}개 있어요.` +
-          (currentPrice !== item.total ? ` 현재 ${quantity}개의 배달비 포함 예상 금액은 ${won(currentPrice)}이에요.` : '');
+        const lines = (item.items ?? [{ menuId: item.menuId, qty: item.qty || 1 }]).map(line => ({
+          item: menus.find(row => row.id === line.menuId && row.store_id === item.storeId),
+          quantity: line.qty,
+        }));
+        addCartMenus(lines, store);
+        const quantity = lines.reduce((sum, line) => sum + line.quantity, 0);
+        const currentPrice = lines.reduce((sum, line) => sum + line.item.price * line.quantity, store.delivery_fee);
+        status.textContent = `${quantity}개 담았어요. 장바구니에 총 ${readCart().reduce((sum, line) => sum + line.quantity, 0)}개 있어요.` +
+          (currentPrice !== item.total ? ` 현재 구성의 배달비 포함 예상 금액은 ${won(currentPrice)}이에요.` : '');
         updateBasketLink();
       } catch (error) {
         status.textContent = error.message || '장바구니에 담지 못했어요.';
