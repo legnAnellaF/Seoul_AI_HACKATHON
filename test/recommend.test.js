@@ -51,7 +51,7 @@ test('requires cheese quantity evidence, diversifies brands and answers franchis
   assert.ok(first.reply.cards.every(card => card.checks.includes('치즈 듬뿍')));
   const noAi = new Proxy({}, { get: () => assert.fail('A franchise question should only read the catalog') });
   const answer = await textTurn(engine, first, '너가 추천해준곳은 프렌차이즈 아닌가?', noAi);
-  assert.match(answer.reply.text, /오븐피자.*프랜차이즈.*나머지/);
+  assert.match(answer.reply.text, /프랜차이즈.*오븐피자.*나머지/);
   assert.equal(answer.reply.preserveResults, true);
   assert.deepEqual(answer.state, first.state);
   const independent = await engine.handle(answer.state, answer.reply.buttons[0].action, noGemini);
