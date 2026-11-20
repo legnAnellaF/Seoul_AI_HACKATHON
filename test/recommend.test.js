@@ -28,6 +28,50 @@ const textTurn = (engine, previous, text, ai = noGemini) =>
   engine.handle(previous?.state, { type: 'text', text }, ai);
 const cards = turn => turn.reply.cards?.map(c => c.storeId) ?? [];
 
+test('requires cheese quantity evidence, diversifies brands and answers franchise questions in context', async () => {
+  const pizza = [
+    ['chain-one', '오븐피자 잠실점', true, '치즈 듬뿍', 18000],
+    ['chain-two', '오븐피자 혜화점', true, '모짜렐라 가득', 19000],
+    ['chain-three', '오븐피자 망우점', true, '더블 치즈', 20000],
+    ['small-shop', '양철지붕피자', false, '치즈를 많이 올렸어요', 27000],
+    ['cheese-only', '작은피자', false, '치즈 쭉쭉 고소', 9000],
+    ['plain', '모락피자', false, '1인용 미니 피자', 7000],
+  ];
+  const engine = createEngine({
+    stores: pizza.map(([id, name, franchise]) => ({
+      id, name, franchise, region: '서초구', dong: '서초4동', category: '피자', rating: 4.5, tip: 1000,
+    })),
+    menus: pizza.map(([store, , , desc, price]) => ({ store, id: store + '-menu', name: '치즈피자', desc, price })),
+  });
+  const first = await textTurn(engine, null, '서초구에서 치즈가 많은 고소한 피자를 먹고 싶어');
+  assert.deepEqual(first.state.cond.taste, ['치즈 듬뿍']);
+  assert.equal(first.state.cond.dish, null);
+  assert.equal(cards(first).filter(id => id.startsWith('chain')).length, 1);
+  assert.ok(cards(first).includes('small-shop'));
+  assert.ok(first.reply.cards.every(card => card.checks.includes('치즈 듬뿍')));
+  const noAi = new Proxy({}, { get: () => assert.fail('A franchise question should only read the catalog') });
+  const answer = await textTurn(engine, first, '너가 추천해준곳은 프렌차이즈 아닌가?', noAi);
+  assert.match(answer.reply.text, /오븐피자.*프랜차이즈.*나머지/);
+  assert.equal(answer.reply.preserveResults, true);
+  assert.deepEqual(answer.state, first.state);
+  const independent = await engine.handle(answer.state, answer.reply.buttons[0].action, noGemini);
+  assert.deepEqual(cards(independent), ['small-shop']);
+  assert.deepEqual(independent.state.cond.taste, ['치즈 듬뿍']);
+  assert.equal(independent.state.cond.franchise, 'exclude');
+  const explicit = await textTurn(engine, first, '프렌차이즈 아닌 피자집으로 바꿔줘');
+  assert.deepEqual(cards(explicit), ['small-shop']);
+  assert.deepEqual(explicit.state.cond.taste, ['치즈 듬뿍']);
+  const tooCheap = await textTurn(engine, independent, '1만원으로 바꿔줘');
+  assert.deepEqual(cards(tooCheap), ['small-shop']);
+  assert.match(tooCheap.reply.cards[0].budgetNote, /18,000원/);
+  const unavailable = await textTurn(createEngine({
+    stores: [{ id: 'plain', name: '작은피자', franchise: false, region: '서초구', dong: '서초4동', category: '피자', rating: 4.5, tip: 1000 }],
+    menus: [{ store: 'plain', id: 'plain-menu', name: '치즈피자', desc: '치즈 쭉쭉 고소', price: 9000 }],
+  }), null, '서초구에서 치즈 듬뿍 피자 추천해줘');
+  assert.match(unavailable.reply.text, /치즈 양이 많다는 근거/);
+  assert.deepEqual(cards(unavailable), []);
+});
+
 test('changes district and dong without clearing food, headcount or budget', async () => {
   const engine = createEngine(snapshot);
   const first = await textTurn(engine, null, '서초구에서 둘이 2만5천 원 안에 치킨 추천해줘');

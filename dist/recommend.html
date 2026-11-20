@@ -250,8 +250,10 @@ function renderCards(cards) {
 
 function render(r, historical = false) {
   renderChips(r.chips);
-  $('remain').textContent = '';
-  if (r.remaining != null) $('remain').innerHTML = `아직 보지 않은 가게 <b>${r.remaining}</b>곳`;
+  if (!r.preserveResults) {
+    $('remain').textContent = '';
+    if (r.remaining != null) $('remain').innerHTML = `아직 보지 않은 가게 <b>${r.remaining}</b>곳`;
+  }
   if (r.banner) {
     const b = add(`<span>${esc(r.banner)}</span>`, 'banner');
     const btn = document.createElement('button');
