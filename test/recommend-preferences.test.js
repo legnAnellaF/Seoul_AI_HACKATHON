@@ -3,8 +3,10 @@ import { test } from 'node:test';
 import { createEngine } from '../lib/engine.js';
 import { recommendationAffinity } from '../lib/recommend-preferences.js';
 import {
-  recommendationContext, recommendationCycles, recordRecommendationTurn, saveRecommendationCycle,
+  recommendationChoiceCounts, recommendationContext, recommendationCycles, recordRecommendationTurn,
+  saveRecommendationChoices, saveRecommendationCycle,
 } from '../dist/recommend-history.js';
+import { choiceKey, followUpChoice, recommendedChoiceKeys } from '../dist/recommend-choices.js';
 
 function memoryStorage() {
   const entries = new Map();
@@ -105,4 +107,120 @@ test('first and later recommendations favor the ordered SKU from eligible plans 
   const narrowed = await engine.handle(result.state, { type: 'text', text: '안 매운 치킨으로 바꿔줘' }, undefined, history);
   assert.ok(narrowed.reply.cards.length);
   assert.equal(narrowed.reply.cards.some(card => card.menuId === 'regular-order'), false);
+});
+
+test('badges recognize repeated choices from their own group, scoped by account and browser', () => {
+  const storage = memoryStorage();
+  const menu = { group: 'menu', value: '치킨' };
+  const people = { group: 'people', value: '2' };
+  const hot = { group: 'heat', value: '매운' };
+  const mild = { group: 'heat', value: '안 매운' };
+  saveRecommendationChoices('customer', [people, people, hot, mild], storage);
+  assert.equal(recommendedChoiceKeys([people, hot], recommendationChoiceCounts('customer', storage)).size, 0);
+  saveRecommendationChoices('customer', [people, hot, mild], storage);
+  saveRecommendationChoices('customer', [menu, menu], storage);
+  const options = [menu, people, hot, mild];
+  const count = () => recommendationChoiceCounts('customer', storage);
+  assert.deepEqual([...recommendedChoiceKeys(options, count())], ['people:2']);
+  saveRecommendationChoices('customer', [menu, hot], storage);
+  assert.deepEqual([...recommendedChoiceKeys(options, count())], ['menu:치킨', 'people:2', 'heat:매운']);
+  assert.equal(recommendedChoiceKeys(options, recommendationChoiceCounts('other', storage)).size, 0);
+  assert.equal(recommendedChoiceKeys(options, recommendationChoiceCounts(undefined, storage)).size, 0);
+
+  const crunchy = followUpChoice('바삭', '어떤 식감이 좋으세요?', '치킨');
+  const soft = followUpChoice('부드럽게', '어떤 식감이 좋으세요?', '치킨');
+  const sameLabel = followUpChoice('부드럽게', '어떤 반죽이 좋으세요?', '치킨');
+  const observed = new Map([[choiceKey(crunchy), 3], [choiceKey(soft), 4]]);
+  assert.notEqual(choiceKey(soft), choiceKey(sameLabel));
+  assert.deepEqual([...recommendedChoiceKeys([crunchy, soft], observed, true)], [choiceKey(soft)]);
+});
+
+test('existing cart cycles contribute known changed conditions without double-counting new choice logs', () => {
+  const storage = memoryStorage();
+  const state = { dong: '서초구', cond: { menu: '치킨', people: 2, taste: ['순살'] } };
+  const cycle = recordRecommendationTurn(null, { type: 'text' }, state, {});
+  const { tracksChoices, ...legacy } = cycle;
+  assert.equal(tracksChoices, true);
+  const choice = { storeId: 'regular', menuIds: ['regular-menu'], total: 21000 };
+  const save = entry => saveRecommendationCycle('customer', entry, {
+    cycleId: entry.id, context: recommendationContext(state),
+  }, choice, storage);
+  save(legacy);
+  save({ ...cycle, id: 'new-cycle' });
+  const choices = recommendationChoiceCounts('customer', storage);
+  assert.equal(choices.get('people:2'), 1);
+  assert.equal(choices.get('menu:치킨'), 1);
+  assert.equal(choices.get('chicken-cut:순살'), 1);
+});
+
+test('chat and direct choices use the same signals without counting carried conditions or expired buttons', async () => {
+  const engine = createEngine({
+    stores: [{ id: 'spicy', region: '서초구', dong: '서초4동', category: '치킨', name: '동네닭집', tip: 1000, rating: 4.5 }],
+    menus: [{ id: 'spicy-menu', store: 'spicy', name: '매콤한 양념치킨', desc: '매운맛', price: 17000 }],
+  });
+  const start = await engine.handle(null, { type: 'dong', dong: '서초구' });
+  const chat = await engine.handle(start.state, { type: 'text', text: '둘이 매운 치킨 추천해줘' });
+  assert.deepEqual(chat.reply.learnedChoices, [
+    { group: 'people', value: '2' }, { group: 'menu', value: '치킨' }, { group: 'heat', value: '매운' },
+  ]);
+  const click = await engine.handle(start.state, { type: 'apply', cond: { menu: '치킨', people: 2, taste: ['매운'] } });
+  assert.deepEqual(click.reply.learnedChoices, chat.reply.learnedChoices);
+  const budget = await engine.handle(chat.state, { type: 'text', text: '예산만 2만 원으로' });
+  assert.deepEqual(budget.reply.learnedChoices, [{ group: 'budget-total', value: '20000' }]);
+  const expired = await engine.handle(budget.state, { type: 'option', index: 8 });
+  assert.equal(expired.reply.learnedChoices, undefined);
+});
+
+test('grounded cola and wrap choices learn the same answer from buttons and chat and retain safe menu filters', async () => {
+  const shop = (id, category, name, desc) => ({
+    store: { id, region: '서초구', dong: '서초4동', category, name: id + '가게', tip: 1000, rating: 4.5 },
+    menu: { id: id + '-menu', store: id, name, desc, price: 19000 },
+  });
+  const rows = [
+    shop('cola', '치킨', '후라이드 순살치킨 세트', '기본 구성은 순살치킨, 콜라입니다.'),
+    shop('no-cola', '치킨', '순살치킨', '음료 미포함'),
+    shop('unknown', '치킨', '후라이드 순살치킨', '기본 치킨'),
+    shop('wrap', '고기·구이', '구이 모둠', '쌈채소를 한 번에 담았어요.'),
+    shop('no-wrap', '고기·구이', '한입 구이', '쌈채소 별도 구매'),
+  ];
+  const engine = createEngine({ stores: rows.map(row => row.store), menus: rows.map(row => row.menu) });
+  const chicken = await engine.handle(null, { type: 'text', text: '서초구 치킨 추천해줘' });
+  assert.match(chicken.reply.followUp, /콜라/);
+  const button = chicken.reply.buttons.find(button => button.label === '콜라 포함 (1곳)');
+  const click = await engine.handle(chicken.state, button.action);
+  const text = await engine.handle(chicken.state, { type: 'text', text: '콜라도 같이 주세요' });
+  assert.deepEqual(click.reply.learnedChoices, [button.choice]);
+  assert.deepEqual(text.reply.learnedChoices, [button.choice]);
+  assert.deepEqual(text.reply.cards.map(card => card.storeId), ['cola']);
+  const negative = await engine.handle(chicken.state, { type: 'text', text: '콜라 없이 주세요' });
+  assert.deepEqual(negative.reply.cards.map(card => card.storeId), ['no-cola']);
+  const info = await engine.handle(chicken.state, { type: 'text', text: '콜라 같이 오나요?' });
+  assert.equal(info.reply.learnedChoices, undefined);
+
+  const grill = await engine.handle(null, { type: 'text', text: '서초구 고기·구이 추천해줘' });
+  assert.match(grill.reply.followUp, /쌈채소/);
+  const wrap = await engine.handle(grill.state, { type: 'text', text: '쌈채소 먹어요' });
+  assert.deepEqual(wrap.reply.learnedChoices, [{ group: 'addon-쌈채소', value: '쌈채소 포함' }]);
+  assert.deepEqual(wrap.reply.cards.map(card => card.storeId), ['wrap']);
+});
+
+test('an optional taste or price answer is learned without clearing the budget', async () => {
+  const stores = ['first', 'second'].map(id => ({
+    id, region: '서초구', dong: '서초4동', category: '피자', name: id, tip: 1000, rating: 4.5,
+  }));
+  const engine = createEngine({ stores, menus: stores.map(({ id }, index) => ({
+    id: id + '-menu', store: id, name: '매운 피자', desc: '매콤한 소스', price: 16000 + index * 2000,
+  })) });
+  const first = await engine.handle(null, { type: 'text', text: '서초구 매운 피자 2만 원 이하로 추천해줘' });
+  assert.match(first.reply.followUp, /맛과 가격/);
+  const taste = first.reply.buttons.find(button => button.label === '맛이 더 중요해요');
+  const result = await engine.handle(first.state, taste.action);
+  assert.deepEqual(result.reply.learnedChoices, [taste.choice]);
+  assert.equal(result.state.cond.budget, 20000);
+  assert.equal(result.state.cond.price_pref, 'any');
+  const price = await engine.handle(first.state, { type: 'text', text: '가격 우선으로' });
+  assert.deepEqual(price.reply.learnedChoices, [{ group: 'priority', value: 'price' }]);
+  const skip = await engine.handle(first.state, { type: 'text', text: '상관없어요' });
+  assert.equal(skip.state.cond.price_pref, 'none');
+  assert.equal(skip.reply.learnedChoices, undefined);
 });

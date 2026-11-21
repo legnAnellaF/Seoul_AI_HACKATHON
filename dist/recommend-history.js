@@ -1,11 +1,10 @@
+import { choiceKey, choicesForConditions, knownTastes } from './recommend-choices.js';
+
 export const maxRecommendationCycles = 40;
 const maxTurnsPerCycle = 40;
+const maxChoiceTurns = 120;
 const cyclePrefix = 'seoul-recommend-cycle:';
-const knownTastes = new Set([
-  '안 매운', '매운', '순살', '뼈', '치즈 듬뿍', '푸짐', '바삭', '마늘', '간장', '양념', '치즈', '로제',
-  '짜장', '짬뽕', '마라', '국물', '담백', '반반', '불향', '해물', '크림', '얼큰', '칼칼', '달콤', '화덕', '세트',
-  '단맛', '신맛', '짠맛', '쓴맛', '고소함', '감칠맛',
-]);
+const choicePrefix = 'seoul-recommend-choice:';
 
 export const validHistoryId = id => typeof id === 'string' && !!id.trim() && id.length <= 120;
 const validPositive = (value, max) => Number.isSafeInteger(value) && value > 0 && value <= max ? value : null;
@@ -39,27 +38,29 @@ export function recordRecommendationTurn(cycle, action, state, reply) {
   return {
     id: cycle?.id ?? crypto.randomUUID(),
     steps: [...(cycle?.steps ?? []), step].slice(-maxTurnsPerCycle),
+    tracksChoices: true,
   };
 }
 
-const storagePrefix = accountId => cyclePrefix + (accountId ?? 'guest') + ':';
+const scopedPrefix = (prefix, accountId) => prefix + (accountId ?? 'guest') + ':';
 export const orderHistoryVersionKey = accountId => 'seoul-recommend-order-version:' + accountId;
 
-function storedCycles(accountId, storage) {
-  const prefix = storagePrefix(accountId);
+function storedEntries(storage, prefix, valid) {
   const entries = [];
   for (let i = 0; i < storage.length; i++) {
     const key = storage.key(i);
     if (!key?.startsWith(prefix)) continue;
     try {
-      const cycle = JSON.parse(storage.getItem(key));
-      if (cycle?.id === key.slice(prefix.length) && Number.isFinite(cycle.completedAt) &&
-          validHistoryId(cycle.choice?.storeId) && Array.isArray(cycle.choice.menuIds) && Array.isArray(cycle.steps)) {
-        entries.push({ key, cycle });
-      }
-    } catch { /* A damaged entry does not affect other cycles. */ }
+      const entry = JSON.parse(storage.getItem(key));
+      if (Number.isFinite(entry?.completedAt) && valid(entry, key.slice(prefix.length))) entries.push({ key, entry });
+    } catch { /* A damaged entry does not affect other records. */ }
   }
-  return entries.sort((a, b) => b.cycle.completedAt - a.cycle.completedAt);
+  return entries.sort((a, b) => b.entry.completedAt - a.entry.completedAt);
+}
+
+function storedCycles(accountId, storage) {
+  return storedEntries(storage, scopedPrefix(cyclePrefix, accountId), (cycle, id) => cycle.id === id &&
+    validHistoryId(cycle.choice?.storeId) && Array.isArray(cycle.choice.menuIds) && Array.isArray(cycle.steps));
 }
 
 export function saveRecommendationCycle(accountId, cycle, offer, choice, storage = globalThis.localStorage, now = Date.now()) {
@@ -67,7 +68,7 @@ export function saveRecommendationCycle(accountId, cycle, offer, choice, storage
   if (!cycle?.steps?.length || cycle.id !== offer?.cycleId || !validHistoryId(choice.storeId)) return false;
   const menuIds = [...new Set(choice.menuIds.filter(validHistoryId))].slice(0, 2);
   if (!menuIds.length) return false;
-  const key = storagePrefix(accountId) + cycle.id;
+  const key = scopedPrefix(cyclePrefix, accountId) + cycle.id;
   try {
     if (storage.getItem(key) !== null) return false;
     storage.setItem(key, JSON.stringify({
@@ -83,7 +84,7 @@ export function saveRecommendationCycle(accountId, cycle, offer, choice, storage
 
 export function recommendationCycles(accountId, storage = globalThis.localStorage) {
   try {
-    return storedCycles(accountId, storage).slice(0, maxRecommendationCycles).map(({ cycle }) => {
+    return storedCycles(accountId, storage).slice(0, maxRecommendationCycles).map(({ entry: cycle }) => {
       const { context, choice, completedAt } = cycle;
       const revisions = new Set(cycle.steps.map(step => readHistoryContext(step?.context))
         .filter(step => step.category === context?.category && step.region === context?.region)
@@ -93,4 +94,47 @@ export function recommendationCycles(accountId, storage = globalThis.localStorag
   } catch {
     return [];
   }
+}
+
+function storedChoiceTurns(accountId, storage) {
+  return storedEntries(storage, scopedPrefix(choicePrefix, accountId), entry => Array.isArray(entry.keys));
+}
+
+export function saveRecommendationChoices(accountId, choices, storage = globalThis.localStorage, now = Date.now()) {
+  const keys = [...new Set((Array.isArray(choices) ? choices : []).map(choiceKey).filter(Boolean))].slice(0, 12);
+  if (!keys.length) return;
+  try {
+    const key = scopedPrefix(choicePrefix, accountId) + crypto.randomUUID();
+    storage.setItem(key, JSON.stringify({ completedAt: now, keys }));
+    for (const old of storedChoiceTurns(accountId, storage).slice(maxChoiceTurns)) storage.removeItem(old.key);
+  } catch { /* Recommendations can work without a writable history. */ }
+}
+
+export function recommendationChoiceCounts(accountId, storage = globalThis.localStorage) {
+  const counts = new Map();
+  const count = key => counts.set(key, (counts.get(key) ?? 0) + 1);
+  try {
+    for (const { entry } of storedChoiceTurns(accountId, storage).slice(0, maxChoiceTurns)) {
+      for (const key of new Set(entry.keys)) if (typeof key === 'string' && key.length <= 89) count(key);
+    }
+    for (const { entry: cycle } of storedCycles(accountId, storage).slice(0, maxRecommendationCycles)) {
+      // Older cycles have condition snapshots but no individual choice events.
+      if (cycle.tracksChoices) continue;
+      const keys = new Set();
+      let previous = {};
+      for (const step of cycle.steps) {
+        if (step?.action === 'dong') continue;
+        const { category, people, tastes } = readHistoryContext(step?.context);
+        const observed = choicesForConditions({
+          menu: category !== previous.category ? category : null,
+          people: people !== previous.people ? people : null,
+          taste: tastes.filter(taste => !previous.tastes?.includes(taste)),
+        });
+        for (const choice of observed) keys.add(choiceKey(choice));
+        previous = { category, people, tastes };
+      }
+      for (const key of keys) count(key);
+    }
+  } catch { /* The current session still accepts choices. */ }
+  return counts;
 }
