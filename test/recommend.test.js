@@ -23,7 +23,7 @@ add('gangdong-cheap-gukbap', '강동구', '성내동', '한식', '성내식당',
 add('outside-seoul', '원미구', '상동', '치킨', '상동닭집', '후라이드치킨', 11000);
 snapshot.menus.push({ id: 'seocho-side', store: 'seocho-chicken', name: '등심돈까스', price: 6000, desc: '푸짐한 돈까스' });
 
-const noGemini = new Proxy({}, { get: () => async () => { throw Error('Gemini unavailable'); } });
+const noGemini = new Proxy({}, { get: () => async () => { throw Error('LLM unavailable'); } });
 const textTurn = (engine, previous, text, ai = noGemini) =>
   engine.handle(previous?.state, { type: 'text', text }, ai);
 const cards = turn => turn.reply.cards?.map(c => c.storeId) ?? [];
@@ -325,4 +325,30 @@ test('acknowledges a previous recommendation without re-running the search', asy
   const switched = await textTurn(engine, chosen, '마음에 드는데 중식으로 바꿔줘');
   assert.equal(switched.state.cond.menu, '중식');
   assert.equal(switched.reply.selected, undefined);
+});
+
+test('[P0-2] AI ② 입력은 상한까지만, 앞부분이 아니라 점수 순으로 보내고 선택지 가게는 코드가 근거로 계산한다', async () => {
+  const { AI2_MAX_STORES, AI2_MAX_MENUS_PER_STORE, AI2_DESC_MAX_CHARS } = await import('../lib/engine.js');
+  const stores = [], menus = [];
+  for (let i = 0; i < 20; i++) {
+    const id = 'big-' + String(i).padStart(2, '0');
+    // 뒤쪽 가게일수록 별점이 높다 → 앞부분 자르기면 뽑히지 않는다
+    stores.push({ id, region: '서초구', dong: '서초4동', category: '치킨', name: '닭집' + i, tip: 1000, rating: 3.5 + i * 0.07 });
+    for (let k = 0; k < 6; k++) menus.push({ id: `${id}-${k}`, store: id, name: (i % 2 ? '순살' : '뼈') + '치킨' + k, price: 18000 + k * 100, desc: '가'.repeat(150) });
+  }
+  const engine = createEngine({ stores, menus });
+  let payload;
+  const ai = {
+    parse: async () => { throw Error('LLM unavailable'); },
+    judge: async () => { throw Error('LLM unavailable'); },
+    question: async p => { payload = p; return { question: '순살과 뼈 중 어느 쪽?', options: [{ label: '순살', store_ids: [] }, { label: '뼈', store_ids: ['big-00'] }] }; },
+  };
+  const turn = await textTurn(engine, null, '서초구 치킨', ai);
+  assert.equal(payload.stores.length, AI2_MAX_STORES);
+  assert.ok(payload.stores.every(s => s.menus.length <= AI2_MAX_MENUS_PER_STORE && s.menus.every(m => m.desc.length <= AI2_DESC_MAX_CHARS)));
+  assert.ok(payload.stores.some(s => s.store_id === 'big-19'));
+  assert.ok(!payload.stores.some(s => s.store_id === 'big-00'));
+  // AI가 store_ids를 비워 보내도 남은 20곳 전체에서 근거로 다시 센다
+  assert.ok(turn.reply.buttons.some(b => b.label === '순살 (10곳)'));
+  assert.ok(turn.reply.buttons.some(b => b.label === '뼈 (10곳)'));
 });
