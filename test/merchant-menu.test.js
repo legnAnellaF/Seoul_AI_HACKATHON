@@ -18,12 +18,75 @@ const draftInput = {
   portion: '닭다리살 350g', features: '순살', notes: '겉바속촉으로 튀깁니다',
 };
 
-test('menu drafts use the seller input with Gemini and fall back on unsupported numbers or missing credentials', async t => {
+function setGeminiKey(t, key) {
   const oldKey = process.env.GEMINI_API_KEY;
+  if (key === undefined) delete process.env.GEMINI_API_KEY;
+  else process.env.GEMINI_API_KEY = key;
   t.after(() => {
     if (oldKey === undefined) delete process.env.GEMINI_API_KEY;
     else process.env.GEMINI_API_KEY = oldKey;
   });
+}
+
+test('plans menu-specific questions from name and price even when Gemini is unavailable', async t => {
+  setGeminiKey(t, undefined);
+  const chicken = await post(menuDescription, { action: 'questions', name: '닭다리 치킨', price: 18000 });
+  assert.equal(chicken.status, 200);
+  assert.equal(chicken.data.provider, 'rules');
+  assert.deepEqual(Object.keys(chicken.data.questions), ['portion', 'composition', 'taste', 'features']);
+  assert.match(chicken.data.questions.portion, /닭다리.*몇 g/);
+  assert.match(chicken.data.questions.taste, /소스|양념/);
+
+  const lunchbox = await post(menuDescription, { action: 'questions', name: '치킨 도시락', price: 10500, category: '치킨' });
+  assert.match(lunchbox.data.questions.portion, /도시락.*몇 인분/);
+  assert.match(lunchbox.data.questions.composition, /메인 반찬/);
+  assert.equal((await post(menuDescription, { action: 'questions', name: '치킨' })).status, 400);
+});
+
+test('uses one Gemini request to prepare all interview questions and rejects a compound prompt', async t => {
+  setGeminiKey(t, 'test-key');
+  const input = { name: '간장 닭다리 치킨', price: 18000, category: '치킨' };
+  let plan = {
+    portion: '닭다리는 한 주문에 몇 g 들어가나요?',
+    composition: '기본으로 함께 제공하는 것은 무엇인가요?',
+    taste: '간장 양념에는 어떤 맛이 나나요?',
+    features: '치킨의 식감은 어떤가요?',
+  };
+  const fetch = t.mock.method(globalThis, 'fetch', async (url, init) => {
+    assert.equal(new URL(url).hostname, 'generativelanguage.googleapis.com');
+    const body = JSON.parse(init.body);
+    assert.deepEqual(JSON.parse(body.contents[0].parts[0].text), input);
+    assert.deepEqual(body.generationConfig.responseJsonSchema.required, Object.keys(plan));
+    return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify(plan) }] } }] });
+  });
+  assert.deepEqual(await post(menuDescription, { action: 'questions', ...input }), {
+    status: 200, data: { questions: plan, provider: 'gemini' },
+  });
+  assert.equal(fetch.mock.callCount(), 1);
+  plan = { ...plan, taste: '맵나요? 무슨 소스를 쓰나요?' };
+  const fallback = await post(menuDescription, { action: 'questions', ...input });
+  assert.equal(fallback.data.provider, 'rules');
+  assert.match(fallback.data.questions.taste, /소스나 양념/);
+});
+
+test('interview answers produce editable details, an explicit serving count and a draft', async t => {
+  setGeminiKey(t, undefined);
+  const menu = { name: '제육 도시락', price: 12500 };
+  const answers = { portion: '2인분 300g', composition: '제육볶음, 밥과 계란말이', taste: '매콤한 고추장 양념', features: '' };
+  const result = await post(menuDescription, { ...menu, answers });
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.data.details, {
+    portion: answers.portion, servings: 2, notes: answers.composition, taste: answers.taste, features: '',
+  });
+  assert.match(result.data.description, /제육 도시락.*매콤한 고추장 양념.*2인분 300g.*제육볶음, 밥과 계란말이/);
+  assert.equal(result.data.description.match(/2인분/g).length, 1);
+  const weightOnly = await post(menuDescription, { ...menu, answers: { portion: '300g' } });
+  assert.equal(weightOnly.data.details.servings, null);
+  assert.equal((await post(menuDescription, { ...menu, answers: {} })).status, 400);
+});
+
+test('menu drafts use the seller input with Gemini and fall back on unsupported numbers or missing credentials', async t => {
+  setGeminiKey(t, 'test-key');
   let calls = 0;
   let output = '맵지 않은 간장 맛을 입힌 순살 치킨으로, 3인분을 제공합니다.';
   t.mock.method(globalThis, 'fetch', async (url, init) => {
@@ -34,7 +97,6 @@ test('menu drafts use the seller input with Gemini and fall back on unsupported 
     return Response.json({ candidates: [{ content: { parts: [{ text: JSON.stringify({ description: output }) }] } }] });
   });
 
-  process.env.GEMINI_API_KEY = 'test-key';
   const generated = await post(menuDescription, draftInput);
   assert.deepEqual(generated, { status: 200, data: { description: output, provider: 'gemini' } });
   output = '12인분입니다.';
