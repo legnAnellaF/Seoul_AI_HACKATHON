@@ -1,4 +1,4 @@
-import { createGemini } from "../lib/ai.js";
+import { createLLM } from "../lib/llm/index.js";
 import { createEngine } from "../lib/engine.js";
 import { supabaseConfig } from "../dist/supabase-config.js";
 
@@ -54,10 +54,10 @@ export default async function recommend(req, res) {
   if (body.action.type === "dong" && !current.regions.includes(body.action.dong)) {
     return res.status(400).json({ error: "목록에 표시된 지역을 골라 주세요." });
   }
-  const ai = createGemini();
+  const ai = createLLM();
   try {
     const result = await current.handle(body.state, body.action, ai);
-    return res.status(200).json({ ...result, provider: ai.used ? "gemini" : "rules" });
+    return res.status(200).json({ ...result, provider: ai.used ? ai.provider : "rules" });
   } catch (error) {
     console.warn("Recommendation request failed:", error.message);
     return res.status(400).json({ error: "요청을 처리하지 못했어요. 지역과 조건을 다시 확인해 주세요." });
