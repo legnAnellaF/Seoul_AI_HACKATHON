@@ -11,8 +11,8 @@ const CATALOG_TTL_MS = 10 * 60 * 1000;
 let catalog;
 let loading;
 
-export async function engine() {
-  if (catalog?.expires > Date.now()) return catalog.value;
+async function baseCatalog() {
+  if (catalog?.expires > Date.now()) return catalog;
   loading ??= (async () => {
     const response = await fetch(supabaseConfig.url + "/rest/v1/rpc/seoul_recommendation_snapshot", {
       method: "POST",
@@ -23,11 +23,40 @@ export async function engine() {
     if (!response.ok) throw new Error("Supabase response " + response.status);
     const snapshot = await response.json();
     if (!Array.isArray(snapshot.stores) || !Array.isArray(snapshot.menus)) throw new Error("Catalog response invalid");
-    const value = createEngine(snapshot);
-    catalog = { value, expires: Date.now() + CATALOG_TTL_MS };
-    return value;
+    catalog = { snapshot, engine: createEngine(snapshot), expires: Date.now() + CATALOG_TTL_MS };
+    return catalog;
   })().finally(() => { loading = undefined; });
   return loading;
+}
+
+async function menuChanges(browserKey) {
+  const response = await fetch(supabaseConfig.url + '/rest/v1/rpc/seoul_delivery_demo', {
+    method: 'POST',
+    headers: { apikey: supabaseConfig.publishableKey, 'Content-Type': 'application/json' },
+    body: JSON.stringify({ action: 'recommendation_menu_changes', browser_key: browserKey }),
+    signal: AbortSignal.timeout(6500),
+  });
+  const changes = await response.json();
+  // During a staggered deploy, the older RPC still serves the base catalog.
+  if (response.status === 400 && changes?.code === 'P0001' && changes.message === '지원하지 않는 시연 요청입니다.') return [];
+  if (!response.ok || !Array.isArray(changes)) throw new Error('Supabase menu changes response ' + response.status);
+  return changes;
+}
+
+export async function engine(browserKey) {
+  const [base, changes] = await Promise.all([baseCatalog(), browserKey ? menuChanges(browserKey) : []]);
+  if (!changes.length) return base.engine;
+  const edits = new Map(changes.map(menu => [menu.id, menu]));
+  const isAvailable = menu => menu.available && !menu.removed;
+  const menus = [];
+  for (const menu of base.snapshot.menus) {
+    const edit = edits.get(menu.id);
+    edits.delete(menu.id);
+    if (!edit) menus.push(menu);
+    else if (isAvailable(edit)) menus.push({ ...menu, ...edit });
+  }
+  for (const menu of edits.values()) if (isAvailable(menu)) menus.push(menu);
+  return createEngine({ stores: base.snapshot.stores, menus });
 }
 
 export default async function recommend(req, res) {
@@ -45,13 +74,15 @@ export default async function recommend(req, res) {
     const action = body?.action;
     if (!["dong", "text", "apply", "option"].includes(action?.type) ||
         (action.type === "text" && (typeof action.text !== "string" || action.text.length > 300)) ||
+        (body.browserKey !== undefined && (typeof body.browserKey !== 'string' ||
+          !/^[\da-f]{8}-[\da-f]{4}-4[\da-f]{3}-[89ab][\da-f]{3}-[\da-f]{12}$/i.test(body.browserKey))) ||
         JSON.stringify(body).length > 50000) {
       return res.status(400).json({ error: "지역이나 음식 요청을 확인해 주세요." });
     }
   }
 
   let current;
-  try { current = await engine(); }
+  try { current = await engine(body?.browserKey); }
   catch (error) {
     console.warn("Recommendation catalog unavailable:", error.message);
     return res.status(503).json({ error: "가게 데이터를 불러오지 못했어요. 잠시 후 다시 시도해 주세요." });
@@ -62,11 +93,12 @@ export default async function recommend(req, res) {
   if (body.action.type === "dong" && !current.regions.includes(body.action.dong)) {
     return res.status(400).json({ error: "목록에 표시된 지역을 골라 주세요." });
   }
-  const ai = createLLM(process.env, { deadline: Date.now() + TURN_BUDGET_MS });
   try {
+    const ai = process.env.RECOMMENDATION_MODE === 'rules' ? undefined
+      : createLLM(process.env, { deadline: Date.now() + TURN_BUDGET_MS });
     const result = await current.handle(body.state, body.action, ai);
-    const timing = { catalog: catalogMs, ...ai.timing, total: Date.now() - started };
-    return res.status(200).json({ ...result, provider: ai.used ? ai.provider : "rules", timing });
+    const timing = { catalog: catalogMs, ...ai?.timing, total: Date.now() - started };
+    return res.status(200).json({ ...result, provider: ai?.used ? ai.provider : "rules", timing });
   } catch (error) {
     console.warn("Recommendation request failed:", error.message);
     return res.status(400).json({ error: "요청을 처리하지 못했어요. 지역과 조건을 다시 확인해 주세요." });

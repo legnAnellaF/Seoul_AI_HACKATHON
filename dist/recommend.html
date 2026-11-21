@@ -105,7 +105,7 @@
   </form>
 </div>
 <script type="module">
-import { demo, esc, won } from './db.js';
+import { browserKey, demo, esc, won } from './db.js';
 import { addCartMenus, readCart, setCartAccount } from './cart.js';
 import { customerRequest, reloadOnSessionChange } from './customer-session.js';
 
@@ -333,7 +333,10 @@ async function send(action, echo) {
   // 서버는 한 번에 응답하므로 경과 시간으로 단계 문구를 바꾼다
   const timers = STAGES.slice(1).map(([ms, text]) => setTimeout(() => { wait.textContent = text; }, ms));
   try {
-    const res = await fetch('/api/recommend', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state, action }) });
+    const res = await fetch('/api/recommend', {
+      method: 'POST', headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ state, action, browserKey: browserKey() }),
+    });
     const data = await res.json();
     wait.remove();
     if (DEBUG && data.timing) add(esc(Object.entries(data.timing).map(([k, v]) => `${k} ${v}ms`).join(' · ') + ` · ${data.provider}`), 'typing');
