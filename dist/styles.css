@@ -155,6 +155,9 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #b94322; }
 .review-text { background: var(--surface); border-radius: 8px; padding: 8px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .account-links { display: grid; }
 .account-links > * { border-bottom: 1px solid var(--line); }
+.auth-panel { margin: 15px; border: 1px solid var(--line); border-radius: 14px; background: white; }
+.auth-panel h2, .auth-panel p { margin: 0; }
+.auth-notice { border-radius: 8px; background: #eaf4ee; padding: 10px; color: #22593f; font-size: 14px; }
 
 .merchant-body { min-height: 100dvh; background: #f4f6f5; display: grid; grid-template-columns: 225px minmax(0,1fr); }
 .sidebar { position: sticky; top: 0; align-self: start; height: 100dvh; display: flex; flex-direction: column; gap: 21px; color: #f5f8f5; padding: 25px 16px; background: #242c28; }

@@ -1,5 +1,6 @@
 import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
-import { addCartMenu, readCart as cart, writeCart } from "./cart.js";
+import { addCartMenu, readCart as cart, setCartAccount, writeCart } from "./cart.js";
+import { customerData, customerRequest, notifySessionChange, reloadOnSessionChange } from "./customer-session.js";
 
 const screen = document.querySelector("#screen");
 const bar = document.querySelector("#checkout-bar");
@@ -18,10 +19,10 @@ const linkedStore = entryParams.get("store");
 const linkedCart = entryParams.get("view") === "cart";
 let fromRecommendation = entryParams.get("from") === "recommend" && !!(linkedStore || linkedCart);
 
-const storageKey = name => "seoul-demo-" + name;
+const storageKey = name => "seoul-demo-" + (state.account?.id || "guest") + ":" + name;
 const stored = (name, fallback) => readLocal(storageKey(name), fallback);
 const write = (name, value) => saveLocal(storageKey(name), value);
-const favorites = () => stored("favorites", []);
+const favorites = () => state.favorites || [];
 const addresses = () => stored("addresses", []);
 const activeAddress = () => addresses().find(item => item.id === stored("address", null)) || { road: "서울 서초구 시연 주소" };
 const getStore = id => state.stores.find(store => store.id === id);
@@ -31,7 +32,7 @@ const cost = rows => rows.reduce((total, item) => total + item.price * item.quan
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
 const icon = (label, symbol, action) => '<button class="icon-button" aria-label="' + label + '" data-act="' + action + '">' + symbol + '</button>';
 const button = (label, action, value = "", className = "secondary") =>
-  '<button class="' + className + '" data-act="' + action + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
+  '<button type="button" class="' + className + '" data-act="' + action + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
 const top = (title, tools = "") => '<header class="screen-header">' + icon("뒤로 가기", "←", "back") + '<h1>' + esc(title) + '</h1>' + tools + '</header>';
 const addressText = address => [address.road, address.detail].filter(Boolean).join(" ");
 
@@ -40,6 +41,33 @@ function notify(text) {
   message.textContent = text;
   message.classList.add("visible");
   messageTimer = setTimeout(() => message.classList.remove("visible"), 4000);
+}
+
+function setAccount(account, moveGuest = false) {
+  state.account = account;
+  state.favorites = undefined;
+  state.orders = undefined;
+  state.activityError = "";
+  state.authNote = "";
+  setCartAccount(account?.id, moveGuest);
+}
+
+function loginGate(text) {
+  return '<section class="pane stack auth-panel"><h2>로그인이 필요해요</h2>' +
+    '<p class="muted">' + esc(text) + '</p>' + button("로그인", "signin", "", "primary") + '</section>';
+}
+
+function requireLogin() {
+  if (state.account) return true;
+  open("signin");
+  return false;
+}
+
+async function loadFavorites() {
+  const account = state.account;
+  if (!account) return;
+  const rows = await customerData("customer_favorites", account);
+  if (state.account === account) state.favorites = rows;
 }
 
 function open(name, value, tab = false) {
@@ -56,7 +84,8 @@ function open(name, value, tab = false) {
   if (name === "addresses") state.addressQuery = "";
   render(true);
   if (name === "search") screen.querySelector("#search-query")?.focus();
-  if (["orders", "notifications", "my-reviews"].includes(name)) void fetchActivity();
+  if (["orders", "notifications", "my-reviews"].includes(name) && state.account) void fetchActivity();
+  if (name === "favorites" && state.account) void run(async () => { await loadFavorites(); render(); });
 }
 
 function back() {
@@ -243,17 +272,35 @@ function basket() {
 }
 
 function account() {
+  const user = state.account;
   return '<header class="screen-header"><h1>마이</h1></header><section class="pane stack">' +
-    '<h2>서초이웃 님</h2><p class="muted">시연 프로필 · 주문과 찜은 이 브라우저에 연결됩니다.</p>' +
+    (user ? '<h2>' + esc(user.name) + ' 님</h2><p class="muted">' + esc(user.email) + '</p>' :
+      '<h2>밥파일럿에 로그인하세요</h2><p class="muted">내 주문, 찜한 가게와 리뷰를 계정에서 확인할 수 있어요.</p>' +
+      button("로그인", "signin", "", "primary") + button("회원가입", "signup")) +
     '<div class="account-links">' + button("주소 관리 ›", "addresses", "", "plain left") +
     button("주문 관리 ›", "orders", "", "plain left") + button("리뷰 관리 ›", "my-reviews", "", "plain left") +
-    '<a class="plain left" href="merchant.html">사장님 화면 ↗</a></div></section>';
+    '<a class="plain left" href="merchant.html">사장님 화면 ↗</a></div>' +
+    (user ? button("로그아웃", "signout") : "") + '</section>';
+}
+
+function authForm(register) {
+  return top(register ? "회원가입" : "로그인") + '<form id="auth-form" class="pane stack auth-panel">' +
+    '<h2>' + (register ? "주문자 계정 만들기" : "주문자 로그인") + '</h2>' +
+    (state.authNote ? '<p class="auth-notice" role="status">' + esc(state.authNote) + '</p>' : "") +
+    (register ? '<label>닉네임<input name="name" autocomplete="nickname" required maxlength="30"></label>' : "") +
+    '<label>이메일<input name="email" type="email" autocomplete="username" required maxlength="254"></label>' +
+    '<label>비밀번호<input name="password" type="password" autocomplete="' + (register ? "new-password" : "current-password") +
+    '" required maxlength="72"' + (register ? ' minlength="8"' : "") + '></label>' +
+    '<button class="primary" type="submit">' + (register ? "가입하기" : "로그인") + '</button>' +
+    button(register ? "이미 계정이 있나요? 로그인" : "처음이신가요? 회원가입", "auth-mode", register ? "signin" : "signup") +
+    '</form>';
 }
 
 function activity(name) {
   const titles = { orders: "주문 내역", notifications: "알림", "my-reviews": "내 리뷰" };
   const header = name === "orders" ? '<header class="screen-header"><h1>주문 내역</h1>' + icon("새로고침", "↻", "refresh") + '</header>' :
     top(titles[name], icon("새로고침", "↻", "refresh"));
+  if (!state.account) return header + loginGate("로그인하면 내 주문과 리뷰를 확인할 수 있어요.");
   if (state.activityError) return header + empty(state.activityError);
   if (!state.orders) return header + empty("불러오는 중…");
   const rows = name === "my-reviews" ? state.orders.filter(order => order.delivery_reviews) : state.orders;
@@ -272,10 +319,18 @@ function activity(name) {
 }
 
 async function fetchActivity() {
+  const account = state.account;
+  if (!account) return;
   state.activityError = "";
   try {
-    state.orders = await demo("orders");
-  } catch (error) { state.activityError = error.message; }
+    const orders = await customerData("customer_orders", account);
+    if (state.account !== account) return;
+    state.orders = orders;
+  } catch (error) {
+    if (state.account !== account) return;
+    if (error.code === "login_required") setAccount(null);
+    else state.activityError = error.message;
+  }
   if (["orders", "notifications", "my-reviews"].includes(route.name)) render();
 }
 
@@ -288,8 +343,11 @@ function reviewForm() {
 
 const views = {
   home, addresses: addressList, "address-new": addressForm, category, search,
-  store: detail, cart: basket, my: account, review: reviewForm,
-  favorites: () => '<header class="screen-header"><h1>찜</h1></header>' + storeList(state.stores.filter(store => favorites().includes(store.id))),
+  store: detail, cart: basket, my: account,
+  signin: () => authForm(false), signup: () => authForm(true),
+  review: () => state.account ? reviewForm() : top("리뷰 작성") + loginGate("로그인하고 배달을 완료한 주문에 리뷰를 쓸 수 있어요."),
+  favorites: () => '<header class="screen-header"><h1>찜</h1></header>' +
+    (state.account ? storeList(state.stores.filter(store => favorites().includes(store.id))) : loginGate("찜한 가게를 계정에 저장하려면 로그인하세요.")),
   orders: () => activity("orders"), notifications: () => activity("notifications"), "my-reviews": () => activity("my-reviews"),
 };
 
@@ -307,7 +365,8 @@ function render(reset = false) {
     route.name === "cart" ? cart().filter(item => item.selected) : [];
   const fee = route.name === "cart" ? [...new Set(rows.map(item => item.store_id))].reduce((sum, id) => sum + (getStore(id)?.delivery_fee || 0), 0) : 0;
   bar.innerHTML = rows.length ? '<button class="primary checkout-button" data-act="' + (route.name === "store" ? "cart" : "checkout") +
-    '"><span class="checkout-count">' + itemCount(rows) + '</span><strong>' + won(cost(rows) + fee) + ' 주문하기</strong></button>' : "";
+    '"><span class="checkout-count">' + itemCount(rows) + '</span><strong>' + won(cost(rows) + fee) +
+    (route.name === "cart" && !state.account ? ' · 로그인 후 주문' : ' 주문하기') + '</strong></button>' : "";
 }
 
 function updateCart(id, change) {
@@ -333,6 +392,7 @@ function updateCart(id, change) {
 }
 
 async function checkout() {
+  if (!requireLogin()) return;
   const address = activeAddress();
   const before = JSON.stringify(cart());
   await catalog();
@@ -351,7 +411,7 @@ async function checkout() {
   const attempt = stored("checkout-attempt", {});
   const key = attempt.signature === signature ? attempt.key : crypto.randomUUID();
   write("checkout-attempt", { signature, key });
-  await demo("place", { ...payload, retry_key: key });
+  await customerData("place", state.account, { ...payload, retry_key: key });
   saveLocal("seoul-demo-store", idList[0]);
   writeCart(cart().filter(item => !rows.some(row => row.id === item.id)));
   write("checkout-attempt", {});
@@ -362,14 +422,29 @@ async function checkout() {
 
 const actions = {
   back, checkout, refresh: fetchActivity,
+  "auth-mode"(view) {
+    state.authNote = "";
+    route = { name: view === "signup" ? "signup" : "signin" };
+    render(true);
+  },
+  async signout() {
+    await customerRequest("logout");
+    setAccount(null);
+    notifySessionChange();
+    open("my", undefined, true);
+    notify("로그아웃했습니다.");
+  },
   async store(id) {
     await loadMenus(id);
     open("store", id);
   },
   "load-more"() { state.listLimit += 30; render(); },
-  heart(id) {
-    const values = favorites();
-    write("favorites", values.includes(id) ? values.filter(value => value !== id) : [...values, id]);
+  async heart(id) {
+    if (!requireLogin()) return;
+    if (!state.favorites) await loadFavorites();
+    const liked = !favorites().includes(id);
+    await customerData("customer_favorite", state.account, { target: id, liked });
+    state.favorites = liked ? [...favorites(), id] : favorites().filter(value => value !== id);
     render();
     screen.querySelector('[data-act="heart"][data-value="' + CSS.escape(id) + '"]')?.focus({ preventScroll: true });
   },
@@ -395,7 +470,13 @@ async function run(task, control) {
   busy = true;
   if (control) control.disabled = true;
   try { await task(); }
-  catch (error) { notify(error.message); }
+  catch (error) {
+    if (error.code === "login_required") {
+      setAccount(null);
+      open("signin");
+    }
+    notify(error.message);
+  }
   finally {
     busy = false;
     if (control?.isConnected) control.disabled = false;
@@ -452,6 +533,23 @@ screen.addEventListener("submit", event => {
   void run(async () => {
     const form = event.target;
     const values = Object.fromEntries(new FormData(form));
+    if (form.id === "auth-form") {
+      const result = await customerRequest(route.name === "signup" ? "register" : "login", values);
+      if (result.needsConfirmation) {
+        state.authNote = "가입 확인 이메일을 보냈어요. 메일의 링크를 연 뒤 로그인해 주세요.";
+        route = { name: "signin" };
+        render(true);
+        return;
+      }
+      setAccount(result.account, true);
+      notifySessionChange();
+      back();
+      const results = await Promise.allSettled([loadFavorites(), fetchActivity()]);
+      render();
+      if (results[0].status === "rejected") throw results[0].reason;
+      notify("로그인했습니다.");
+      return;
+    }
     if (form.id === "address-form") {
       const item = { id: crypto.randomUUID(), ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.trim()])) };
       if (item.road.length < 3) throw new Error("도로명 또는 지번 주소를 입력해 주세요.");
@@ -461,7 +559,8 @@ screen.addEventListener("submit", event => {
       notify("주소를 저장했습니다.");
     }
     if (form.id === "review-form") {
-      await demo("review", { order_id: route.value, rating: Number(values.rating), body: values.body.trim() });
+      if (!requireLogin()) return;
+      await customerData("review", state.account, { order_id: route.value, rating: Number(values.rating), body: values.body.trim() });
       back();
       await fetchActivity();
       notify("리뷰를 등록했습니다.");
@@ -469,10 +568,25 @@ screen.addEventListener("submit", event => {
   }, event.submitter);
 });
 
+reloadOnSessionChange();
+const restoredAccount = customerRequest("session").then(({ account }) => {
+  setAccount(account);
+  return loadFavorites();
+}).catch(error => notify(error.message));
 try {
-  await catalog();
+  await Promise.all([catalog(), restoredAccount]);
   await syncCart();
-  if (fromRecommendation) {
+  if (entryParams.has("code") || entryParams.has("error_code")) {
+    const url = new URL(location.href);
+    for (const key of ["code", "error", "error_code", "error_description"]) url.searchParams.delete(key);
+    history.replaceState(null, "", url);
+    if (state.account) open("my", undefined, true);
+    else {
+      state.authNote = entryParams.has("error_code") ? "가입 확인 링크를 처리하지 못했어요. 이메일을 다시 확인해 주세요." :
+        "가입한 이메일과 비밀번호로 로그인해 주세요.";
+      open("signin");
+    }
+  } else if (fromRecommendation) {
     if (getStore(linkedStore)) await loadMenus(linkedStore);
     route = linkedStore ? { name: "store", value: linkedStore } : { name: "cart" };
     render(true);

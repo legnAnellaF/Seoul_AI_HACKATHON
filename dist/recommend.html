@@ -106,11 +106,15 @@
 </div>
 <script type="module">
 import { demo, esc, won } from './db.js';
-import { addCartMenus, readCart } from './cart.js';
+import { addCartMenus, readCart, setCartAccount } from './cart.js';
+import { customerRequest, reloadOnSessionChange } from './customer-session.js';
 
 const $ = id => document.getElementById(id);
 const log = $('log');
-const SESSION_KEY = 'seoul-recommend-conversation';
+reloadOnSessionChange();
+const { account } = await customerRequest('session').catch(() => ({ account: null }));
+setCartAccount(account?.id);
+const SESSION_KEY = 'seoul-recommend-conversation' + (account ? ':' + account.id : '');
 let saved;
 try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { saved = null; }
 let state = saved?.state ?? null, busy = false, regionSelect;
