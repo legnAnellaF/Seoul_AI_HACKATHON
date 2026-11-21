@@ -28,6 +28,24 @@ const textTurn = (engine, previous, text, ai = noGemini) =>
   engine.handle(previous?.state, { type: 'text', text }, ai);
 const cards = turn => turn.reply.cards?.map(c => c.storeId) ?? [];
 
+test('recommends only open catalog stores and marks good-price stores in new categories', async () => {
+  const data = {
+    stores: [
+      { id: 'open', name: '열린 버거', is_open: true, is_good_price: true },
+      { id: 'closed', name: '닫힌 버거', is_open: false, is_good_price: true },
+    ].map(store => ({ ...store, category: '패스트푸드', region: '서초구', dong: '서초4동', tip: 1000, rating: null })),
+    menus: [
+      { id: '1', store: 'open', name: '치즈버거', price: 8000, desc: '' },
+      { id: '2', store: 'closed', name: '치즈버거', price: 6000, desc: '' },
+    ],
+  };
+  const engine = createEngine(data);
+  const region = await engine.handle(null, { type: 'dong', dong: '서초구' }, noGemini);
+  const result = await textTurn(engine, region, '치즈버거 먹고 싶어');
+  assert.deepEqual(cards(result), ['open']);
+  assert.equal(result.reply.cards[0].isGoodPrice, true);
+});
+
 test('requires cheese quantity evidence, diversifies brands and answers franchise questions in context', async () => {
   const pizza = [
     ['chain-one', '오븐피자 잠실점', true, '치즈 듬뿍', 18000],

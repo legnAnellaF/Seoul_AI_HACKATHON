@@ -9,6 +9,7 @@ export function addCartMenu(item, store, quantity = 1) {
 }
 
 export function addCartMenus(lines, store) {
+  if (store?.is_open === false) throw new Error('현재 배달 주문을 받지 않는 가게입니다.');
   const rows = readCart();
   let total = 0;
   for (const { item, quantity } of lines) {

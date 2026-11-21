@@ -1,7 +1,7 @@
-import { date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
+import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 
 let storeId = readLocal("seoul-demo-store", "G0427");
-let catalog = { stores: [], menus: [] };
+let catalog = { stores: [] };
 let allOrders = [];
 const headings = { home: "홈", orders: "주문 내역", menu: "메뉴 관리", sales: "매출", reviews: "리뷰 관리" };
 const content = document.querySelector("#dashboard-content");
@@ -19,15 +19,18 @@ const dayKey = value => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
 const action = (label, mode, value = "", style = "secondary") => '<button class="' + style + '" data-mode="' + mode + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
 
-function selectStore() {
-  if (!catalog.stores.some(store => store.id === storeId)) storeId = catalog.stores[0]?.id;
+async function selectStore(id) {
+  menus = id ? await demo("store_menus", { target: id }) : [];
+  storeId = id;
   orders = allOrders.filter(order => order.store_id === storeId);
-  menus = catalog.menus.filter(item => item.store_id === storeId);
 }
 
 async function load() {
-  [catalog, allOrders] = await Promise.all([demo("catalog"), demo("orders")]);
-  selectStore();
+  [catalog, allOrders] = await Promise.all([
+    demo("catalog", { stores_only: true, include_order_stores: true }), demo("orders")
+  ]);
+  await selectStore(catalog.stores.some(store => store.id === storeId) ? storeId : catalog.stores[0]?.id);
+  renderStoreSelector();
 }
 
 function controls(order) {
@@ -60,7 +63,10 @@ function home() {
   const today = salesFor(day => day === dayKey(Date.now()));
   const shop = catalog.stores.find(store => store.id === storeId);
   const info = shop ? '<section class="panel"><h2>가게 정보</h2><p>' + esc(shop.name) + ' · ' + esc(shop.category) +
-    ' · ' + esc(shop.district) + ' · 배달비 ' + won(shop.delivery_fee) + '</p></section>' : "";
+    ' · ' + esc(shop.district) + ' · 배달비 ' + won(shop.delivery_fee) + '</p><p>' +
+    (!shop.is_listed ? '이전 주문 가게' : shop.is_open ? '배달 가능' : '배달 마감') +
+    ' · 착한가게 ' + (shop.is_good_price ? '지정' : '미지정') +
+    ' · 노출 ' + count(shop.exposure_count) + '회</p></section>' : "";
   return info + '<div class="dash-stats"><article><span>접수 대기</span><strong>' + pending.length +
     '건</strong></article><article><span>조리·배달 중</span><strong>' + delivering.length +
     '건</strong></article><article><span>오늘 메뉴 매출</span><strong>' + won(today.sum) +
@@ -133,8 +139,7 @@ function reviews() {
       empty("등록된 리뷰가 없습니다.")) + '</section>';
 }
 
-function render() {
-  document.querySelector("#dashboard-title").textContent = headings[tab];
+function renderStoreSelector() {
   const orderStores = new Set(allOrders.map(order => order.store_id));
   const sorted = [...catalog.stores].sort((a, b) => Number(orderStores.has(b.id)) - Number(orderStores.has(a.id)));
   document.querySelector("#dashboard-actions").innerHTML =
@@ -142,6 +147,10 @@ function render() {
       '<option value="' + esc(store.id) + '"' + (store.id === storeId ? ' selected' : '') +
       '>' + esc(store.name + " · " + store.district) + (orderStores.has(store.id) ? " · 주문 있음" : "") + '</option>').join("") +
     '</select>' + action("새로고침", "refresh");
+}
+
+function render() {
+  document.querySelector("#dashboard-title").textContent = headings[tab];
   document.querySelector(".sidebar-shop strong").textContent = catalog.stores.find(store => store.id === storeId)?.name || "가게를 불러오는 중";
   document.querySelectorAll("[data-tab]").forEach(node => {
     if (node.dataset.tab === tab) node.setAttribute("aria-current", "page");
@@ -193,12 +202,17 @@ document.addEventListener("click", event => {
 
 document.addEventListener("change", event => {
   if (event.target.id === "demo-store") {
-    storeId = event.target.value;
-    saveLocal("seoul-demo-store", storeId);
-    editing = undefined;
-    page = 0;
-    selectStore();
-    render();
+    const selector = event.target;
+    const id = selector.value;
+    selector.value = storeId || "";
+    void run(async () => {
+      await selectStore(id);
+      selector.value = id;
+      saveLocal("seoul-demo-store", storeId);
+      editing = undefined;
+      page = 0;
+      render();
+    }, selector);
   }
   if (event.target.id === "order-filter") { orderFilter = event.target.value; page = 0; render(); }
   if (event.target.id === "sales-month" && event.target.value) { monthFilter = event.target.value; render(); }
@@ -229,4 +243,4 @@ content.addEventListener("submit", event => {
 });
 
 try { await load(); render(); }
-catch (error) { render(); message.textContent = error.message; }
+catch (error) { renderStoreSelector(); render(); message.textContent = error.message; }
