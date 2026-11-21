@@ -160,7 +160,7 @@ function home() {
     '<section class="category-grid" aria-label="음식 카테고리">' +
     cats.map(cat => '<button data-act="category" data-value="' + esc(cat.id) + '">' + categoryImage(cat.id) + '<span>' + esc(cat.name) + '</span></button>').join("") + '</section>' +
     '<section class="shortcut-grid" aria-label="서비스 바로가기">' +
-    shortcuts.map((label, index) => '<button disabled><img src="assets/shortcut-' + index + '.webp" alt="">' + label + '</button>').join("") +
+    shortcuts.map(label => '<button disabled>' + esc(label) + '</button>').join("") +
     '</section></section>';
 }
 
@@ -176,12 +176,16 @@ function addressResults() {
   const list = addresses();
   if (!list.length) return empty("등록된 주소가 없습니다. 오른쪽 위 연필 버튼으로 배달 주소를 등록해 주세요.");
   const matches = list.filter(item => (addressText(item) + " " + item.label).includes(state.addressQuery.trim()));
+  const selectedId = stored("address", null);
   return matches.map(item => {
-    const selected = item.id === activeAddress()?.id;
-    return '<button class="address-row" data-act="address-select" data-value="' + esc(item.id) + '"><span class="pin" aria-hidden="true"></span><span><strong>' +
-      esc(item.label || item.road) + '</strong>' + (selected ? ' <small class="selected-address">현재 설정된 주소</small>' : '') +
+    const selected = item.id === selectedId;
+    const label = item.label || item.road;
+    return '<div class="saved-address"><button type="button" class="address-row" data-act="address-select" data-value="' + esc(item.id) + '"><span class="pin" aria-hidden="true"></span><span><strong>' +
+      esc(label) + '</strong>' + (selected ? ' <small class="selected-address">현재 설정된 주소</small>' : '') +
       '<span>' + esc(addressText(item)) + '</span>' + (item.note ? '<small>' + esc(item.note) + '</small>' : '') +
-      '</span><span aria-hidden="true">' + (selected ? "✓" : "") + '</span></button>';
+      '</span><span aria-hidden="true">' + (selected ? "✓" : "") + '</span></button>' +
+      '<button type="button" class="address-delete" data-act="address-delete" data-value="' + esc(item.id) +
+      '" aria-label="' + esc(label + " 주소 삭제") + '">삭제</button></div>';
   }).join("") || empty("일치하는 주소가 없습니다.");
 }
 
@@ -530,6 +534,16 @@ const actions = {
     write("address", id);
     back();
     notify("배달 주소를 변경했습니다.");
+  },
+  "address-delete"(id) {
+    const list = addresses();
+    if (!list.some(item => item.id === id) || !window.confirm("등록한 주소를 삭제할까요?")) return;
+    const remaining = list.filter(item => item.id !== id);
+    write("addresses", remaining);
+    if (stored("address", null) === id) write("address", remaining[0]?.id ?? null);
+    screen.querySelector("#address-results").innerHTML = addressResults();
+    (screen.querySelector(".address-delete") || screen.querySelector("#address-query")).focus({ preventScroll: true });
+    notify("주소를 삭제했습니다.");
   },
   location() {
     open("address-map", { locate: true });
