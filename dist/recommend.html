@@ -124,6 +124,13 @@ function updateHeader() {
   $('category').hidden = !state?.dong || $('category').options.length < 2;
 }
 
+const DEBUG = new URLSearchParams(location.search).get('debug') === '1';
+const STAGES = [[0, '조건 정리 중…'], [1500, '가게 찾는 중…'], [4000, '추천 이유 정리 중…']];
+function lockForm(on) {
+  $('input').readOnly = on;
+  $('form').querySelector('button').disabled = on;
+}
+
 function add(html, cls = '') {
   const el = document.createElement('div');
   if (cls) el.className = cls;
@@ -275,12 +282,16 @@ async function send(action, echo) {
   if (!action) { $('input').placeholder = '예: 3만 원까지 괜찮아'; $('input').focus(); return; }
   if (busy) return;
   busy = true;
+  lockForm(true);
   if (echo) add(esc(echo), 'msg user');
-  const wait = add('찾는 중…', 'typing');
+  const wait = add(esc(STAGES[0][1]), 'typing');
+  // 서버는 한 번에 응답하므로 경과 시간으로 단계 문구를 바꾼다
+  const timers = STAGES.slice(1).map(([ms, text]) => setTimeout(() => { wait.textContent = text; }, ms));
   try {
     const res = await fetch('/api/recommend', { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ state, action }) });
     const data = await res.json();
     wait.remove();
+    if (DEBUG && data.timing) add(esc(Object.entries(data.timing).map(([k, v]) => `${k} ${v}ms`).join(' · ') + ` · ${data.provider}`), 'typing');
     if (!res.ok) {
       const error = data.error || '오류가 났어요.';
       add(esc(error), 'msg bot');
@@ -300,7 +311,7 @@ async function send(action, echo) {
     wait.remove();
     add('서버에 연결하지 못했어요.', 'msg bot');
     remember({ echo, error: '서버에 연결하지 못했어요.' });
-  } finally { busy = false; }
+  } finally { timers.forEach(clearTimeout); busy = false; lockForm(false); }
 }
 
 $('form').onsubmit = e => {
