@@ -96,7 +96,7 @@ export default async function recommend(req, res) {
   try {
     const ai = process.env.RECOMMENDATION_MODE === 'rules' ? undefined
       : createLLM(process.env, { deadline: Date.now() + TURN_BUDGET_MS });
-    const result = await current.handle(body.state, body.action, ai);
+    const result = await current.handle(body.state, body.action, ai, body.preferences);
     const timing = { catalog: catalogMs, ...ai?.timing, total: Date.now() - started };
     return res.status(200).json({ ...result, provider: ai?.used ? ai.provider : "rules", timing });
   } catch (error) {

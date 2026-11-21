@@ -94,3 +94,29 @@ test("a refreshed request carries the authenticated token and the expected accou
   assert.equal(upstream.mock.callCount(), 2);
   assert.match(result.headers["Set-Cookie"][0], /new-access/);
 });
+
+test("recommendation preferences return only order counts for the signed-in account", async t => {
+  const other = "33333333-3333-4333-8333-333333333333";
+  const upstream = t.mock.method(globalThis, "fetch", async (url, options) => {
+    assert.match(url, /\/rpc\/seoul_delivery_demo$/);
+    assert.equal(options.headers.Authorization, "Bearer test-token");
+    const payload = JSON.parse(options.body);
+    assert.equal(payload.action, "customer_orders");
+    if (payload.payload.expected_customer !== account) return Response.json({ code: "42501" }, { status: 403 });
+    return Response.json([
+      { store_id: "chicken", status: "completed", address: "private", items: [{ id: "soy", quantity: 4 }] },
+      { store_id: "chicken", status: "pending", address: "private", items: [{ id: "soy", quantity: 1 }, { id: "side", quantity: 2 }] },
+      { store_id: "other", status: "rejected", address: "private", items: [{ id: "other-menu", quantity: 1 }] },
+    ]);
+  });
+  const input = { action: "recommendation_preferences", account, browser_key: browser };
+  const session = { cookie: "__Host-bappilot-access=test-token" };
+  assert.equal((await request(input)).status, 401);
+  assert.equal((await request({ ...input, account: other }, session)).status, 401);
+  const result = await request(input, session);
+  assert.equal(result.status, 200);
+  assert.deepEqual(result.body, {
+    stores: [{ id: "chicken", count: 2 }], menus: [{ id: "soy", count: 2 }, { id: "side", count: 1 }],
+  });
+  assert.equal(upstream.mock.callCount(), 2);
+});

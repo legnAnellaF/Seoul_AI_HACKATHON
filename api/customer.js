@@ -1,5 +1,6 @@
 import { supabaseConfig } from "../dist/supabase-config.js";
 import { AGREEMENT_VERSION, validSignupDemographics } from "../dist/signup.js";
+import { summarizeOrderHistory } from "../lib/recommend-preferences.js";
 
 const ACCESS = "__Host-bappilot-access";
 const REFRESH = "__Host-bappilot-refresh";
@@ -8,7 +9,7 @@ const ACCOUNT_DOMAIN = "@bappilot.invalid";
 const USERNAME = /^[a-z][a-z0-9_]{3,23}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
-const RPC_ACTIONS = new Set(["customer_orders", "customer_favorites", "customer_favorite", "place", "review"]);
+const RPC_ACTIONS = new Set(["customer_orders", "recommendation_preferences", "customer_favorites", "customer_favorite", "place", "review"]);
 
 function cookie(name, value, age) {
   return name + "=" + value + "; Path=/; HttpOnly; Secure; SameSite=Lax; Max-Age=" + age;
@@ -159,15 +160,16 @@ export default async function customer(req, res) {
         !payload || typeof payload !== "object" || Array.isArray(payload)) {
       return error(res, 400, "주문자 요청 정보를 확인해 주세요.");
     }
+    const preferences = action === "recommendation_preferences";
     const result = await callWithSession(req, res, token => supabase("/rest/v1/rpc/seoul_delivery_demo", "POST", {
-      action, browser_key, payload: { ...payload, expected_customer: account },
+      action: preferences ? "customer_orders" : action, browser_key, payload: { ...payload, expected_customer: account },
     }, token));
     if (isExpired(result)) return error(res, 401, "다시 로그인한 뒤 시도해 주세요.", "login_required");
     if (!result.ok) {
       const message = result.data?.code === "P0001" ? result.data.message : "요청을 처리하지 못했어요. 잠시 후 다시 시도해 주세요.";
       return error(res, result.status >= 500 ? 503 : 400, message);
     }
-    return res.status(200).json(result.data);
+    return res.status(200).json(preferences ? summarizeOrderHistory(result.data) : result.data);
   } catch {
     return error(res, 503, "주문자 서비스에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.");
   }

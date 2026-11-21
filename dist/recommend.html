@@ -116,10 +116,13 @@
   </form>
 </div>
 <script type="module">
-import { browserKey, demo, esc, won } from './db.js';
+import { browserKey, demo, esc, readLocal, won } from './db.js';
 import { addCartMenus, readCart, setCartAccount } from './cart.js';
-import { customerRequest, reloadOnSessionChange } from './customer-session.js';
+import { customerData, customerRequest, reloadOnSessionChange } from './customer-session.js';
 import { heatLevels } from './menu-interview.js';
+import {
+  orderHistoryVersionKey, recommendationContext, recommendationCycles, recordRecommendationTurn, saveRecommendationCycle,
+} from './recommend-history.js';
 
 const $ = id => document.getElementById(id);
 const log = $('log');
@@ -130,15 +133,38 @@ const SESSION_KEY = 'seoul-recommend-conversation' + (account ? ':' + account.id
 let saved;
 try { saved = JSON.parse(sessionStorage.getItem(SESSION_KEY)); } catch { saved = null; }
 let state = saved?.state ?? null, busy = false, regionSelect;
+let cycle = Array.isArray(saved?.cycle?.steps) ? saved.cycle : null;
 const turns = Array.isArray(saved?.turns) ? saved.turns.slice(-40) : [];
 const optionButtons = new Set();
 const scroll = () => log.lastElementChild?.scrollIntoView({ behavior: 'smooth', block: 'end' });
 
+function persistConversation() {
+  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ state, turns, cycle })); } catch { /* The live chat still works without storage. */ }
+}
+
 function remember(turn) {
   turns.push(turn);
   if (turns.length > 40) turns.shift();
-  try { sessionStorage.setItem(SESSION_KEY, JSON.stringify({ state, turns })); } catch { /* The live chat still works without storage. */ }
+  persistConversation();
 }
+
+let orderVersion, ordersRequest;
+function orderPreferences() {
+  if (!account) return null;
+  // Checkout in another page invalidates this tab's account order counts.
+  const version = readLocal(orderHistoryVersionKey(account.id), null);
+  if (!ordersRequest || version !== orderVersion) {
+    orderVersion = version;
+    const pending = customerData('recommendation_preferences', account).catch(() => {
+      if (ordersRequest === pending) ordersRequest = null;
+      return null;
+    });
+    ordersRequest = pending;
+  }
+  return ordersRequest;
+}
+
+void orderPreferences();
 
 function updateBasketLink() {
   const count = readCart().reduce((sum, menu) => sum + menu.quantity, 0);
@@ -226,6 +252,10 @@ function renderChips(chips = []) {
 
 const QUOTE_MAX = 40;
 const short = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
+const preferenceLabels = new Map([
+  ['orderedMenu', '이전에 주문한 메뉴'], ['orderedStore', '이전에 주문한 가게'],
+  ['cartMenu', '전에 담은 메뉴'], ['cartStore', '전에 담은 가게'],
+]);
 function menuIntro({ quote, menuDescription }) {
   const description = menuDescription || quote;
   if (!description) return '';
@@ -237,11 +267,13 @@ function card(c, i, common = []) {
   const params = new URLSearchParams({ store: c.storeId, from: 'recommend' });
   if (c.menuId) params.set('menu', c.menuId);
   const heat = heatLevels.find(level => level.number === c.heat);
+  const preference = preferenceLabels.get(c.preferredBy);
   const tags = [
     c.foodLabel && `<span class="tag">${esc(c.foodLabel)} 후보</span>`,
     c.setMenu && '<span class="tag">세트 메뉴</span>',
     c.portionNote && `<span class="tag">${esc(c.portionNote)}</span>`,
     heat && `<span class="tag">맵기 ${heat.number}/5 · ${esc(heat.example)} 정도</span>`,
+    preference && `<span class="tag">${preference}</span>`,
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
     c.isGoodPrice && '<span class="tag">착한가게</span>',
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
@@ -267,7 +299,7 @@ function card(c, i, common = []) {
 }
 
 let addingMenu = false;
-function renderCards(cards) {
+function renderCards(cards, offer) {
   // 모든 카드에 똑같은 ✓는 위에 한 번만, 카드엔 그 가게만 다른 항목
   const common = cards.length > 1 ? cards[0].checks.filter(x => cards.every(c => c.checks.includes(x))) : [];
   if (common.length) add(`${cards.length === 3 ? '세' : cards.length} 곳 모두: ${common.map(x => '✓ ' + esc(x)).join(' · ')}`, 'common');
@@ -296,6 +328,13 @@ function renderCards(cards) {
         addCartMenus(lines, store);
         const quantity = lines.reduce((sum, line) => sum + line.quantity, 0);
         const currentPrice = lines.reduce((sum, line) => sum + line.item.price * line.quantity, store.delivery_fee);
+        if (cycle && cycle.id === offer?.cycleId) {
+          saveRecommendationCycle(account?.id, cycle, offer, {
+            storeId: store.id, menuIds: lines.map(line => line.item.id), total: currentPrice,
+          });
+          cycle = null;
+          persistConversation();
+        }
         status.textContent = `${quantity}개 담았어요. 장바구니에 총 ${readCart().reduce((sum, line) => sum + line.quantity, 0)}개 있어요.` +
           (currentPrice !== item.total ? ` 현재 구성의 배달비 포함 예상 금액은 ${won(currentPrice)}이에요.` : '');
         updateBasketLink();
@@ -320,7 +359,7 @@ function feedback() {
   }
 }
 
-function render(r, historical = false) {
+function render(r, historical = false, offer) {
   renderChips(r.chips);
   if (!r.preserveResults) {
     $('remain').textContent = '';
@@ -335,11 +374,11 @@ function render(r, historical = false) {
   }
   if (r.text) add(esc(r.text), 'msg bot');
   if (r.cards?.length) {
-    renderCards(r.cards);
-    if (!r.lookup) add('광고 없이 조건으로만 골랐어요', 'noad');
+    renderCards(r.cards, offer);
+    if (!r.lookup) add('광고 없이 조건에 맞춰 골랐어요', 'noad');
     if (!historical && !r.lookup) feedback();
   }
-  if (r.selected) renderCards([r.selected]);
+  if (r.selected) renderCards([r.selected], offer);
   if (r.followUp) add(esc(r.followUp), 'msg bot');
   if (r.buttons?.length) buttons(r.buttons, historical);
 }
@@ -354,9 +393,14 @@ async function send(action, echo) {
   // 서버는 한 번에 응답하므로 경과 시간으로 단계 문구를 바꾼다
   const timers = STAGES.slice(1).map(([ms, text]) => setTimeout(() => { wait.textContent = text; }, ms));
   try {
+    const orders = await orderPreferences();
+    const cycles = recommendationCycles(account?.id);
+    const preferences = orders?.stores?.length || orders?.menus?.length || cycles.length ? { orders, cycles } : undefined;
+    const request = { state, action, browserKey: browserKey() };
+    const personalized = JSON.stringify({ ...request, preferences });
     const res = await fetch('/api/recommend', {
       method: 'POST', headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ state, action, browserKey: browserKey() }),
+      body: personalized.length <= 50000 ? personalized : JSON.stringify(request),
     });
     const data = await res.json();
     wait.remove();
@@ -372,9 +416,11 @@ async function send(action, echo) {
       optionButtons.clear();
     }
     state = data.state;
+    cycle = recordRecommendationTurn(cycle, action, state, data.reply);
+    const offer = cycle ? { cycleId: cycle.id, context: recommendationContext(state) } : null;
     updateHeader();
-    render(data.reply);
-    remember({ echo, reply: data.reply });
+    render(data.reply, false, offer);
+    remember({ echo, reply: data.reply, offer });
     return true;
   } catch {
     wait.remove();
@@ -464,9 +510,9 @@ if (Speech) {
 
 void chooseRegion();
 const activeReply = turns.findLastIndex(turn => turn.reply);
-turns.forEach(({ echo, reply, error }, index) => {
+turns.forEach(({ echo, reply, error, offer }, index) => {
   if (echo) add(esc(echo), 'msg user');
-  if (reply) render(reply, index !== activeReply || !state?.pending);
+  if (reply) render(reply, index !== activeReply || !state?.pending, offer);
   else if (error) add(esc(error), 'msg bot');
 });
 updateHeader();

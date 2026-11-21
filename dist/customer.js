@@ -1,5 +1,6 @@
 import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 import { addCartMenu, readCart as cart, setCartAccount, writeCart } from "./cart.js";
+import { orderHistoryVersionKey } from "./recommend-history.js";
 import { customerData, customerRequest, notifySessionChange, reloadOnSessionChange } from "./customer-session.js";
 import { AGREEMENT_VERSION, entryTerms, finalTerms, koreanAgeAtSignup, signupDetailsError } from "./signup.js";
 import { mountAddressPicker } from "./address-picker.js";
@@ -499,6 +500,7 @@ async function checkout() {
   const key = attempt.signature === signature ? attempt.key : crypto.randomUUID();
   write("checkout-attempt", { signature, key });
   await customerData("place", state.account, { ...payload, retry_key: key });
+  try { saveLocal(orderHistoryVersionKey(state.account.id), key); } catch { /* The order is already in Supabase. */ }
   saveLocal("seoul-demo-store", idList[0]);
   writeCart(cart().filter(item => !rows.some(row => row.id === item.id)));
   write("checkout-attempt", {});
