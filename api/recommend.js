@@ -4,6 +4,9 @@ import { supabaseConfig } from "../dist/supabase-config.js";
 
 // 턴 전체 시간 예산. 남은 시간이 부족하면 AI 재요청 없이 규칙 기반 폴백.
 const TURN_BUDGET_MS = 12000;
+// 가게 데이터(snapshot)는 수 MB라 받는 데 수 초 걸린다. 인스턴스마다 캐시해서 콜드 로드만 느리게.
+const CATALOG_TIMEOUT_MS = 15000; // + AI 예산 12초 < Vercel maxDuration 30초
+const CATALOG_TTL_MS = 10 * 60 * 1000;
 
 let catalog;
 let loading;
@@ -15,13 +18,13 @@ export async function engine() {
       method: "POST",
       headers: { apikey: supabaseConfig.publishableKey, "Content-Type": "application/json" },
       body: "{}",
-      signal: AbortSignal.timeout(6500)
+      signal: AbortSignal.timeout(CATALOG_TIMEOUT_MS)
     });
     if (!response.ok) throw new Error("Supabase response " + response.status);
     const snapshot = await response.json();
     if (!Array.isArray(snapshot.stores) || !Array.isArray(snapshot.menus)) throw new Error("Catalog response invalid");
     const value = createEngine(snapshot);
-    catalog = { value, expires: Date.now() + 120000 };
+    catalog = { value, expires: Date.now() + CATALOG_TTL_MS };
     return value;
   })().finally(() => { loading = undefined; });
   return loading;
@@ -59,7 +62,7 @@ export default async function recommend(req, res) {
   if (body.action.type === "dong" && !current.regions.includes(body.action.dong)) {
     return res.status(400).json({ error: "목록에 표시된 지역을 골라 주세요." });
   }
-  const ai = createLLM(process.env, { deadline: started + TURN_BUDGET_MS });
+  const ai = createLLM(process.env, { deadline: Date.now() + TURN_BUDGET_MS });
   try {
     const result = await current.handle(body.state, body.action, ai);
     const timing = { catalog: catalogMs, ...ai.timing, total: Date.now() - started };
