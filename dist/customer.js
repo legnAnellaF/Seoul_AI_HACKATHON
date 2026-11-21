@@ -1,6 +1,8 @@
 import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 import { addCartMenu, readCart as cart, setCartAccount, writeCart } from "./cart.js";
 import { customerData, customerRequest, notifySessionChange, reloadOnSessionChange } from "./customer-session.js";
+import { AGREEMENT_VERSION, entryTerms, finalTerms, signupDetailsError } from "./signup.js";
+import { mountAddressPicker } from "./address-picker.js";
 
 const screen = document.querySelector("#screen");
 const bar = document.querySelector("#checkout-bar");
@@ -14,6 +16,8 @@ let busy = false;
 let messageTimer;
 let searchTimer;
 let searchRequest = 0;
+let signup = freshSignup();
+let unmountAddressPicker;
 const entryParams = new URLSearchParams(location.search);
 const linkedStore = entryParams.get("store");
 const linkedCart = entryParams.get("view") === "cart";
@@ -52,6 +56,14 @@ function setAccount(account, moveGuest = false) {
   setCartAccount(account?.id, moveGuest);
 }
 
+function freshSignup() {
+  return { entry: {}, final: {}, details: {} };
+}
+
+function inSignup(name) {
+  return ["signup", "signup-details", "signup-consent"].includes(name);
+}
+
 function loginGate(text) {
   return '<section class="pane stack auth-panel"><h2>로그인이 필요해요</h2>' +
     '<p class="muted">' + esc(text) + '</p>' + button("로그인", "signin", "", "primary") + '</section>';
@@ -71,6 +83,8 @@ async function loadFavorites() {
 }
 
 function open(name, value, tab = false) {
+  if (tab && inSignup(route.name)) signup = freshSignup();
+  if (name === "signup" && !inSignup(route.name)) signup = freshSignup();
   if (tab) { previous = []; fromRecommendation = false; }
   else previous.push(route);
   route = { name, value };
@@ -96,7 +110,9 @@ function back() {
     else location.replace(recommendation.href);
     return;
   }
-  route = previous.pop() ?? { name: "home" };
+  const next = previous.pop() ?? { name: "home" };
+  if (inSignup(route.name) && !inSignup(next.name)) signup = freshSignup();
+  route = next;
   state.listLimit = 30;
   render(true);
 }
@@ -176,6 +192,20 @@ function addressForm() {
     '<label>상세 주소<input name="detail" maxlength="55" placeholder="동, 호수"></label>' +
     '<label>배달 요청사항<input name="note" maxlength="80" placeholder="문 앞에 놓아 주세요"></label>' +
     '<button type="submit" class="primary">주소 저장</button></form>';
+}
+
+function addressPickerView() {
+  return top("지도에서 위치 확인") + '<div class="address-picker">' +
+    '<div class="address-map-area"><div class="address-map" aria-label="배달 위치 지도"></div>' +
+    '<span class="address-map-pin" aria-hidden="true"></span><button type="button" class="map-locate" aria-label="현재 위치 다시 찾기">⌖</button></div>' +
+    '<div class="pane stack map-address-panel"><strong class="map-address-heading">선택한 배달 주소</strong>' +
+    '<p class="muted" id="map-address-status" role="status">지도에서 배달할 위치를 선택해 주세요.</p>' +
+    '<form id="map-address-search" class="map-address-search"><label>도로명 또는 지번 주소' +
+    '<input id="map-road" name="road" maxlength="110" required minlength="3" placeholder="주소를 입력해 위치 변경"></label>' +
+    '<button type="submit" class="secondary">검색</button></form><div id="map-address-matches" class="stack"></div>' +
+    '<form id="map-address-save" class="stack"><label>상세 주소<input name="detail" maxlength="55" placeholder="건물, 동, 호수"></label>' +
+    '<button type="submit" class="primary" disabled>이 위치로 주소 등록</button></form>' +
+    button("직접 주소 등록", "address-new", "", "plain left") + '</div></div>';
 }
 
 function heart(id) {
@@ -274,7 +304,7 @@ function basket() {
 function account() {
   const user = state.account;
   return '<header class="screen-header"><h1>마이</h1></header><section class="pane stack">' +
-    (user ? '<h2>' + esc(user.name) + ' 님</h2><p class="muted">' + esc(user.email) + '</p>' :
+    (user ? '<h2>' + esc(user.name) + ' 님</h2><p class="muted">' + esc(user.identifier || user.email) + '</p>' :
       '<h2>밥파일럿에 로그인하세요</h2><p class="muted">내 주문, 찜한 가게와 리뷰를 계정에서 확인할 수 있어요.</p>' +
       button("로그인", "signin", "", "primary") + button("회원가입", "signup")) +
     '<div class="account-links">' + button("주소 관리 ›", "addresses", "", "plain left") +
@@ -283,17 +313,56 @@ function account() {
     (user ? button("로그아웃", "signout") : "") + '</section>';
 }
 
-function authForm(register) {
-  return top(register ? "회원가입" : "로그인") + '<form id="auth-form" class="pane stack auth-panel">' +
-    '<h2>' + (register ? "주문자 계정 만들기" : "주문자 로그인") + '</h2>' +
+function authForm() {
+  return top("로그인") + '<form id="auth-form" class="pane stack auth-panel">' +
+    '<h2>주문자 로그인</h2>' +
     (state.authNote ? '<p class="auth-notice" role="status">' + esc(state.authNote) + '</p>' : "") +
-    (register ? '<label>닉네임<input name="name" autocomplete="nickname" required maxlength="30"></label>' : "") +
-    '<label>이메일<input name="email" type="email" autocomplete="username" required maxlength="254"></label>' +
-    '<label>비밀번호<input name="password" type="password" autocomplete="' + (register ? "new-password" : "current-password") +
-    '" required maxlength="72"' + (register ? ' minlength="8"' : "") + '></label>' +
-    '<button class="primary" type="submit">' + (register ? "가입하기" : "로그인") + '</button>' +
-    button(register ? "이미 계정이 있나요? 로그인" : "처음이신가요? 회원가입", "auth-mode", register ? "signin" : "signup") +
+    '<label>아이디 또는 이메일<input name="identifier" autocomplete="username" autocapitalize="none" required maxlength="254"></label>' +
+    '<label>비밀번호<input name="password" type="password" autocomplete="current-password" required maxlength="72"></label>' +
+    '<button class="primary" type="submit">로그인</button>' +
+    button("처음이신가요? 회원가입", "signup") +
     '</form>';
+}
+
+function signupTerms(stage) {
+  const final = stage === "final";
+  const terms = final ? finalTerms : entryTerms;
+  const checked = signup[stage];
+  const heading = final ? "가입에 필요한 약관에 동의해 주세요" : "회원가입 전에 확인해 주세요";
+  return top("회원가입") + '<section class="pane stack signup-card">' +
+    '<p class="signup-step">' + (final ? "3" : "1") + ' / 3</p><h2>' + heading + '</h2>' +
+    '<form class="signup-consent stack" id="signup-' + stage + '">' +
+    '<label class="consent-all"><input type="checkbox" data-agree-all' +
+    (terms.every(([key]) => checked[key]) ? " checked" : "") + '>필수 항목 전체 동의</label>' +
+    terms.map(([key, title, content]) => '<div class="consent-item"><label><input type="checkbox" name="' + key + '"' +
+      (checked[key] ? " checked" : "") + '><span><small>필수</small> ' + esc(title) + '</span></label>' +
+      (content ? '<details><summary aria-label="' + esc(title) + ' 보기">내용</summary><p>' + esc(content) + '</p></details>' : "") +
+      '</div>').join("") +
+    '<button type="submit" class="primary"' + (terms.every(([key]) => checked[key]) ? "" : " disabled") + '>' +
+    (final ? "완료" : "다음") + '</button></form></section>';
+}
+
+function signupForm() {
+  const data = signup.details;
+  return top("회원가입") + '<section class="pane stack signup-card"><p class="signup-step">2 / 3</p>' +
+    '<h2>가입 정보를 입력해 주세요</h2><form id="signup-details" class="stack">' +
+    '<label>휴대전화 번호<input name="phone" type="tel" autocomplete="tel" required maxlength="13" value="' + esc(data.phone) + '"></label>' +
+    '<label>생년월일<input name="birth" type="date" min="1900-01-01" autocomplete="bday" required value="' + esc(data.birth) + '"></label>' +
+    '<label>이름<input name="name" autocomplete="name" required maxlength="30" value="' + esc(data.name) + '"></label>' +
+    '<label>아이디<input name="identifier" autocomplete="username" autocapitalize="none" required maxlength="24" value="' + esc(data.identifier) + '"></label>' +
+    '<label>비밀번호<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>' +
+    '<label>비밀번호 확인<input name="passwordConfirm" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>' +
+    '<p class="muted signup-hint">휴대전화 번호와 생년월일은 이 화면에서만 확인합니다.</p>' +
+    '<p id="signup-validation" class="signup-validation" role="status"></p>' +
+    '<button type="submit" class="primary" disabled>다음</button></form></section>';
+}
+
+function refreshSignupForm(form) {
+  const values = Object.fromEntries(new FormData(form));
+  const message = signupDetailsError(values);
+  const complete = Object.values(values).every(Boolean);
+  form.querySelector("#signup-validation").textContent = complete ? message : "";
+  form.querySelector('button[type="submit"]').disabled = !form.checkValidity() || !!message;
 }
 
 function activity(name) {
@@ -342,9 +411,9 @@ function reviewForm() {
 }
 
 const views = {
-  home, addresses: addressList, "address-new": addressForm, category, search,
+  home, addresses: addressList, "address-new": addressForm, "address-map": addressPickerView, category, search,
   store: detail, cart: basket, my: account,
-  signin: () => authForm(false), signup: () => authForm(true),
+  signin: authForm, signup: () => signupTerms("entry"), "signup-details": signupForm, "signup-consent": () => signupTerms("final"),
   review: () => state.account ? reviewForm() : top("리뷰 작성") + loginGate("로그인하고 배달을 완료한 주문에 리뷰를 쓸 수 있어요."),
   favorites: () => '<header class="screen-header"><h1>찜</h1></header>' +
     (state.account ? storeList(state.stores.filter(store => favorites().includes(store.id))) : loginGate("찜한 가게를 계정에 저장하려면 로그인하세요.")),
@@ -354,8 +423,17 @@ const views = {
 function render(reset = false) {
   const scroll = reset ? 0 : screen.scrollTop;
   screen.classList.toggle("on-home", route.name === "home");
+  unmountAddressPicker?.();
+  unmountAddressPicker = undefined;
   screen.innerHTML = views[route.name]();
   screen.scrollTop = scroll;
+  if (route.name === "address-map") unmountAddressPicker = mountAddressPicker(screen.querySelector(".address-picker"), route.value, saveAddress);
+  if (route.name === "signup-details") {
+    const form = screen.querySelector("#signup-details");
+    form.elements.password.value = signup.details.password || "";
+    form.elements.passwordConfirm.value = signup.details.passwordConfirm || "";
+    refreshSignupForm(form);
+  }
   const tab = ["home", "favorites", "orders", "my"].includes(route.name) ? route.name : previous.find(item => ["home", "favorites", "orders", "my"].includes(item.name))?.name;
   document.querySelectorAll("[data-go]").forEach(node => {
     if (node.dataset.go === tab) node.setAttribute("aria-current", "page");
@@ -422,11 +500,6 @@ async function checkout() {
 
 const actions = {
   back, checkout, refresh: fetchActivity,
-  "auth-mode"(view) {
-    state.authNote = "";
-    route = { name: view === "signup" ? "signup" : "signin" };
-    render(true);
-  },
   async signout() {
     await customerRequest("logout");
     setAccount(null);
@@ -454,12 +527,7 @@ const actions = {
     notify("배달 주소를 변경했습니다.");
   },
   location() {
-    if (!navigator.geolocation) return notify("현재 위치를 사용할 수 없습니다. 주소를 직접 입력해 주세요.");
-    navigator.geolocation.getCurrentPosition(
-      () => { open("address-new"); notify("현재 주소를 도로명 또는 지번으로 입력해 주세요."); },
-      () => notify("위치를 확인하지 못했습니다. 주소를 직접 입력해 주세요."),
-      { timeout: 6000 }
-    );
+    open("address-map", { locate: true });
   },
 
 };
@@ -495,6 +563,11 @@ document.addEventListener("click", event => {
 });
 
 screen.addEventListener("input", event => {
+  if (event.target.form?.id === "signup-details") {
+    const form = event.target.form;
+    signup.details = Object.fromEntries(new FormData(form));
+    refreshSignupForm(form);
+  }
   if (event.target.id === "search-query") {
     state.query = event.target.value;
     state.listLimit = 30;
@@ -521,6 +594,18 @@ screen.addEventListener("input", event => {
 });
 
 screen.addEventListener("change", event => {
+  const form = event.target.form;
+  if (form?.matches(".signup-consent")) {
+    const stage = form.id === "signup-final" ? "final" : "entry";
+    const all = form.querySelector("[data-agree-all]");
+    const items = [...form.querySelectorAll("input[name]")];
+    if (event.target === all) items.forEach(item => { item.checked = all.checked; });
+    signup[stage] = Object.fromEntries(items.map(item => [item.name, item.checked]));
+    all.checked = items.every(item => item.checked);
+    all.indeterminate = !all.checked && items.some(item => item.checked);
+    form.querySelector('button[type="submit"]').disabled = !all.checked;
+    return;
+  }
   if (!event.target.matches("[data-select]")) return;
   const id = event.target.dataset.select;
   writeCart(cart().map(item => item.id === id ? { ...item, selected: event.target.checked } : item));
@@ -528,35 +613,58 @@ screen.addEventListener("change", event => {
   screen.querySelector('[data-select="' + id + '"]')?.focus({ preventScroll: true });
 });
 
+function saveAddress(fields) {
+  const id = crypto.randomUUID();
+  write("addresses", [...addresses(), { id, ...fields }]);
+  write("address", id);
+  back();
+  notify("주소를 저장했습니다.");
+}
+
+async function signedIn(account, registered = false) {
+  setAccount(account, true);
+  notifySessionChange();
+  if (registered) {
+    signup = freshSignup();
+    open("my", undefined, true);
+  } else back();
+  const results = await Promise.allSettled([loadFavorites(), fetchActivity()]);
+  render();
+  if (results[0].status === "rejected") throw results[0].reason;
+  notify(registered ? "가입이 완료되었습니다." : "로그인했습니다.");
+}
+
 screen.addEventListener("submit", event => {
+  if (["map-address-search", "map-address-save"].includes(event.target.id)) return;
   event.preventDefault();
   void run(async () => {
     const form = event.target;
     const values = Object.fromEntries(new FormData(form));
     if (form.id === "auth-form") {
-      const result = await customerRequest(route.name === "signup" ? "register" : "login", values);
-      if (result.needsConfirmation) {
-        state.authNote = "가입 확인 이메일을 보냈어요. 메일의 링크를 연 뒤 로그인해 주세요.";
-        route = { name: "signin" };
-        render(true);
-        return;
-      }
-      setAccount(result.account, true);
-      notifySessionChange();
-      back();
-      const results = await Promise.allSettled([loadFavorites(), fetchActivity()]);
-      render();
-      if (results[0].status === "rejected") throw results[0].reason;
-      notify("로그인했습니다.");
+      await signedIn((await customerRequest("login", values)).account);
+      return;
+    }
+    if (form.id === "signup-entry" && entryTerms.every(([key]) => signup.entry[key])) {
+      open("signup-details");
+      return;
+    }
+    if (form.id === "signup-details") {
+      const error = signupDetailsError(values);
+      if (error) throw new Error(error);
+      signup.details = values;
+      open("signup-consent");
+      return;
+    }
+    if (form.id === "signup-final" && entryTerms.every(([key]) => signup.entry[key]) && finalTerms.every(([key]) => signup.final[key])) {
+      const { name, identifier, password } = signup.details;
+      const result = await customerRequest("register", { name, identifier, password, agreements: AGREEMENT_VERSION });
+      await signedIn(result.account, true);
       return;
     }
     if (form.id === "address-form") {
-      const item = { id: crypto.randomUUID(), ...Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.trim()])) };
+      const item = Object.fromEntries(Object.entries(values).map(([key, value]) => [key, value.trim()]));
       if (item.road.length < 3) throw new Error("도로명 또는 지번 주소를 입력해 주세요.");
-      write("addresses", [...addresses(), item]);
-      write("address", item.id);
-      back();
-      notify("주소를 저장했습니다.");
+      saveAddress(item);
     }
     if (form.id === "review-form") {
       if (!requireLogin()) return;

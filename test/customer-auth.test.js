@@ -36,12 +36,39 @@ test("login returns a profile and stores tokens only in protected cookies", asyn
   }));
   const result = await request({ action: "login", email: "customer@example.test", password: "test-only-password" });
   assert.equal(result.status, 200);
-  assert.deepEqual(result.body, { account: { id: account, email: "customer@example.test", name: "Tester" } });
+  assert.deepEqual(result.body, { account: { id: account, identifier: "customer@example.test", name: "Tester" } });
   assert.equal(result.headers["Set-Cookie"].length, 2);
   for (const cookie of result.headers["Set-Cookie"]) {
     assert.match(cookie, /^__Host-/);
     assert.match(cookie, /Path=\/; HttpOnly; Secure; SameSite=Lax/);
   }
+});
+
+test("registration requires agreement and signs in the newly enrolled username", async t => {
+  const payloads = [];
+  t.mock.method(globalThis, "fetch", async (url, options) => {
+    payloads.push(JSON.parse(options.body));
+    if (url.endsWith("/functions/v1/customer-enroll")) return Response.json({ created: true }, { status: 201 });
+    assert.match(url, /grant_type=password$/);
+    return Response.json({
+      access_token: "auth-token", refresh_token: "refresh-token",
+      user: { id: account, email: "sample_1@bappilot.invalid", user_metadata: { name: "Tester" } },
+    });
+  });
+  const form = {
+    action: "register", identifier: "Sample_1", password: "test-only-password", name: "Tester",
+    phone: "unused", birth: "unused",
+  };
+  assert.equal((await request(form)).status, 400);
+  assert.equal(payloads.length, 0);
+  const result = await request({ ...form, agreements: "2026-11-21" });
+  assert.equal(result.status, 200);
+  assert.equal(result.body.account.identifier, "sample_1");
+  assert.equal(result.headers["Set-Cookie"].length, 2);
+  assert.deepEqual(payloads, [
+    { username: "sample_1", name: "Tester", password: form.password, agreements: "2026-11-21" },
+    { email: "sample_1@bappilot.invalid", password: form.password },
+  ]);
 });
 
 test("a refreshed request carries the authenticated token and the expected account", async t => {

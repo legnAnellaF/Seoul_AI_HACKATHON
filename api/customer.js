@@ -1,10 +1,12 @@
-import { createHash, randomBytes } from "node:crypto";
 import { supabaseConfig } from "../dist/supabase-config.js";
 
 const ACCESS = "__Host-bappilot-access";
 const REFRESH = "__Host-bappilot-refresh";
 const REFRESH_AGE = 30 * 24 * 60 * 60;
-const SITE = "https://seoul-ai-hackathon.vercel.app/";
+const ACCOUNT_DOMAIN = "@bappilot.invalid";
+const USERNAME = /^[a-z][a-z0-9_]{3,23}$/;
+const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+const AGREEMENT_VERSION = "2026-11-21";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RPC_ACTIONS = new Set(["customer_orders", "customer_favorites", "customer_favorite", "place", "review"]);
 
@@ -55,8 +57,9 @@ const error = (res, status, message, code) => res.status(status).json({ error: m
 
 function profile(user) {
   if (!user?.id || !user.email) throw new Error("Missing account profile");
+  const identifier = user.email.endsWith(ACCOUNT_DOMAIN) ? user.email.slice(0, -ACCOUNT_DOMAIN.length) : user.email;
   const name = user.user_metadata?.name;
-  return { id: user.id, email: user.email, name: typeof name === "string" && name.trim() ? name.trim().slice(0, 30) : user.email.split("@")[0] };
+  return { id: user.id, identifier, name: typeof name === "string" && name.trim() ? name.trim().slice(0, 30) : identifier.split("@")[0] };
 }
 
 async function callWithSession(req, res, operation) {
@@ -76,34 +79,41 @@ async function callWithSession(req, res, operation) {
   return operation(renewed.data.access_token);
 }
 
-function authError(res, reply, registering) {
+function authError(res, reply) {
   const code = reply.data?.error_code;
   if (reply.status === 429) return error(res, 429, "요청이 많아요. 잠시 후 다시 시도해 주세요.");
   if (reply.status >= 500) return error(res, 503, "로그인 서비스에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.");
   if (code === "email_not_confirmed") return error(res, 400, "가입 확인 이메일의 링크를 연 뒤 로그인해 주세요.");
-  if (code === "email_address_not_authorized") return error(res, 400, "이 이메일로 가입 확인 메일을 보낼 수 없어요. 기존 계정으로 로그인해 주세요.");
-  if (registering && code === "weak_password") return error(res, 400, "가입 기준에 맞는 비밀번호를 입력해 주세요.");
-  return error(res, 400, registering ? "가입 요청을 처리하지 못했어요. 이메일과 비밀번호를 확인해 주세요." : "이메일 또는 비밀번호를 확인해 주세요.");
+  return error(res, 400, "아이디 또는 비밀번호를 확인해 주세요.");
 }
 
 async function signIn(res, credentials, registering) {
-  const email = typeof credentials.email === "string" ? credentials.email.trim() : "";
+  const value = credentials.identifier ?? credentials.email;
+  const identifier = typeof value === "string" ? value.trim().toLowerCase() : "";
   const password = credentials.password;
-  const name = typeof credentials.name === "string" ? credentials.name.trim() : "";
-  if (email.length > 254 || !/^[^\s@]+@[^\s@]+\.[^\s@]+$/.test(email) ||
-      typeof password !== "string" || !password || Buffer.byteLength(password) > 72 ||
-      (registering && (password.length < 8 || !name || name.length > 30))) {
-    return error(res, 400, "이메일, 비밀번호와 가입 정보를 확인해 주세요.");
+  const username = USERNAME.test(identifier);
+  if ((!username && (registering || identifier.length > 254 || !EMAIL.test(identifier))) ||
+      typeof password !== "string" || !password || Buffer.byteLength(password) > 72) {
+    return error(res, 400, "아이디와 비밀번호를 확인해 주세요.");
   }
-  // Email confirmation uses a code flow. The customer signs in with their password after confirming.
-  const challenge = registering ? createHash("sha256").update(randomBytes(32).toString("base64url")).digest("base64url") : null;
-  const result = registering
-    ? await auth("signup?redirect_to=" + encodeURIComponent(SITE), "POST", {
-        email, password, data: { name }, code_challenge: challenge, code_challenge_method: "s256",
-      })
-    : await auth("token?grant_type=password", "POST", { email, password });
-  if (!result.ok) return authError(res, result, registering);
-  if (registering && !result.data?.access_token) return res.status(200).json({ needsConfirmation: true });
+  if (registering) {
+    const name = typeof credentials.name === "string" ? credentials.name.trim() : "";
+    if (!name || name.length > 30 || password.length < 8 || credentials.agreements !== AGREEMENT_VERSION) {
+      return error(res, 400, "이름, 비밀번호와 필수 동의를 확인해 주세요.");
+    }
+    const enrollment = await supabase("/functions/v1/customer-enroll", "POST", {
+      username: identifier, name, password, agreements: AGREEMENT_VERSION,
+    });
+    if (!enrollment.ok) {
+      if (enrollment.status === 409) return error(res, 409, "이미 사용 중인 아이디입니다.", "username_taken");
+      if (enrollment.status === 429) return error(res, 429, "가입 요청이 많아요. 잠시 후 다시 시도해 주세요.");
+      if (enrollment.status >= 500 || enrollment.status === 401) return error(res, 503, "가입 서비스에 연결하지 못했어요. 잠시 후 다시 시도해 주세요.");
+      return error(res, 400, "가입 정보를 확인해 주세요. 비밀번호는 8자 이상이어야 합니다.");
+    }
+  }
+  const email = username ? identifier + ACCOUNT_DOMAIN : identifier;
+  const result = await auth("token?grant_type=password", "POST", { email, password });
+  if (!result.ok) return authError(res, result);
   const account = profile(result.data?.user);
   setSession(res, result.data);
   return res.status(200).json({ account });
