@@ -277,6 +277,66 @@ test('shows exact dishes, then explicitly labeled category alternatives for miss
   assert.ok(!overBudget.reply.cards[0].checks.includes('예산'));
 });
 
+const tteokbokkiStores = [
+  { id: 'seller', name: '봄분식', category: '분식' },
+  { id: 'brand', name: '엽떡 서초점', category: '분식' },
+  { id: 'mala', name: '마라반점', category: '중식' },
+].map(store => ({ ...store, region: '서초구', dong: '서초4동', tip: 1000, rating: 4.5 }));
+const tteokbokkiMenus = [
+  { id: 'brand-original', store: 'brand', name: '엽떡', price: 13000, desc: '매운 떡볶이' },
+  { id: 'mala-tang', store: 'mala', name: '마라탕', price: 12000, desc: '얼얼한 마라 맛' },
+];
+
+test('matches the whole registered 마라로제엽떡 name instead of filtering by the store name inside it', async () => {
+  const registered = { id: 'demo-mara-rose', store: 'seller', name: '마라로제엽떡', price: 16000, desc: '마라 향과 로제 소스를 더한 떡볶이예요.' };
+  const engine = createEngine({ stores: tteokbokkiStores, menus: [...tteokbokkiMenus, registered] });
+  const region = await engine.handle(null, { type: 'dong', dong: '서초구' });
+  for (const text of ['마라로제엽떡', '마라 로제 엽떡', '2만 원 이하로 마라로제엽떡 추천해줘']) {
+    const result = await textTurn(engine, region, text);
+    assert.equal(result.state.cond.menu, '분식');
+    assert.equal(result.state.cond.dish, registered.name);
+    assert.equal(result.state.cond.store, null);
+    assert.deepEqual(result.state.cond.taste, ['로제', '마라']);
+    assert.deepEqual(cards(result), ['seller']);
+    const [card] = result.reply.cards;
+    assert.equal(card.menuId, registered.id);
+    assert.equal(card.partial, false);
+    assert.ok(card.checks.includes('마라') && card.checks.includes('로제'));
+  }
+  const explicitStore = await textTurn(engine, region, '엽떡 서초점에서 마라로제엽떡 추천해줘');
+  assert.equal(explicitStore.state.cond.store, '엽떡 서초점');
+  const model = { parse: async () => ({ menu: '중식', dish: '마라', taste: ['마라'] }) };
+  const withModel = await textTurn(engine, region, '마라로제엽떡 추천해줘', model);
+  assert.equal(withModel.state.cond.menu, '분식');
+  assert.equal(withModel.state.cond.dish, registered.name);
+  assert.ok(withModel.reply.cards[0].checks.includes('로제'));
+});
+
+test('keeps the flavored 떡볶이 request in 분식 when the exact menu is absent', async () => {
+  const similar = { id: 'similar', store: 'seller', name: '마라 로제 떡볶이', price: 15000, desc: '마라 향과 로제 소스' };
+  const engine = createEngine({ stores: tteokbokkiStores, menus: [...tteokbokkiMenus, similar] });
+  const region = await engine.handle(null, { type: 'dong', dong: '서초구' });
+  const result = await textTurn(engine, region, '마라로제엽떡');
+  assert.equal(result.state.cond.menu, '분식');
+  assert.equal(result.state.cond.dish, '마라로제엽떡');
+  assert.equal(result.state.cond.store, null);
+  assert.deepEqual(result.state.cond.taste, ['로제', '마라']);
+  assert.match(result.reply.text, /마라로제엽떡.*찾지 못했어요.*분식.*대안/);
+  assert.deepEqual(cards(result), ['seller']);
+  assert.equal(result.reply.cards[0].menuId, similar.id);
+  assert.equal(result.reply.cards[0].partial, true);
+  const singleFlavor = createEngine({
+    stores: tteokbokkiStores,
+    menus: [...tteokbokkiMenus, { ...similar, name: '로제떡볶이', desc: '부드러운 로제 소스' }],
+  });
+  const partial = await textTurn(singleFlavor, region, '마라로제엽떡');
+  assert.match(partial.reply.text, /‘마라’ 조건은 .*확인하지 못했어요/);
+  assert.ok(partial.reply.cards.every(card => card.partial && !card.checks.includes('마라')));
+  const malaTang = await textTurn(engine, region, '마라탕');
+  assert.equal(malaTang.state.cond.menu, '중식');
+  assert.equal(malaTang.reply.cards[0].menuId, 'mala-tang');
+});
+
 test('searches a group budget without a category and offers the nearest totals', async () => {
   const engine = createEngine({
     stores: snapshot.stores.filter(store => store.category === '치킨'),
