@@ -27,7 +27,17 @@
   .chip { display: inline-flex; align-items: center; gap: 4px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 10px; font-size: 13px; background: var(--surface); color: var(--ink); }
   .chip.accent { border-color: var(--accent); color: var(--accent); }
   .chip button { border: 0; background: none; color: var(--muted); padding: 0 0 0 2px; font-size: 14px; cursor: pointer; line-height: 1; }
-  .chip.price { cursor: pointer; }
+  .chip.price, .chip.menu { cursor: pointer; }
+  .chip.price::after, .chip.menu::after { content: '▾'; font-size: 11px; color: var(--muted); }
+  .btn small { display: block; font-size: 12px; opacity: .8; }
+  .start { display: flex; flex-direction: column; gap: 8px; background: var(--bg); border-radius: 16px; padding: 12px; }
+  .start b { font-size: 14px; }
+  .examples { display: flex; flex-wrap: wrap; gap: 6px; }
+  .examples .chip { cursor: pointer; font: inherit; font-size: 13px; }
+  .common { font-size: 13px; color: var(--brand); }
+  .feedback { display: flex; align-items: center; justify-content: center; gap: 8px; font-size: 13px; color: var(--muted); }
+  .feedback .btn { padding: 4px 12px; }
+  #mic { background: var(--brand-soft); color: var(--brand); border: 1px solid var(--brand); font-size: 18px; }
   main { flex: 1; padding: 16px; display: flex; flex-direction: column; gap: 12px; overflow-y: auto; }
   .msg { max-width: 85%; padding: 10px 13px; border-radius: 16px; white-space: pre-wrap; }
   .bot { align-self: flex-start; background: var(--bg); border-top-left-radius: 4px; }
@@ -42,8 +52,8 @@
   .card .head { display: flex; justify-content: space-between; align-items: baseline; gap: 8px; }
   .card .name { font-weight: 700; font-size: 16px; }
   .card .rank { font-size: 12px; color: var(--muted); }
-  .card .menu { color: var(--muted); font-size: 14px; }
-  .card .total { font-size: 20px; font-weight: 800; }
+  .card .menu { font-size: 17px; font-weight: 800; line-height: 1.35; }
+  .card .total { font-size: 20px; font-weight: 800; color: var(--brand); }
   .checks { display: flex; flex-wrap: wrap; gap: 4px 10px; font-size: 13px; color: var(--brand); }
   .tags { display: flex; flex-wrap: wrap; gap: 6px; }
   .tag { font-size: 12px; border-radius: 6px; padding: 2px 8px; background: var(--accent-soft); color: var(--accent); font-weight: 600; }
@@ -89,6 +99,7 @@
   </header>
   <main id="log" role="log" aria-label="추천 대화"></main>
   <form id="form">
+    <button type="button" id="mic" hidden aria-label="말로 하기">🎤</button>
     <input id="input" aria-label="음식 조건" placeholder="예: 둘이서 바삭한 간장치킨, 프랜차이즈 말고" autocomplete="off" maxlength="300">
     <button>보내기</button>
   </form>
@@ -146,6 +157,11 @@ function buttons(list, historical = false) {
     const el = document.createElement('button');
     el.className = 'btn' + (b.ghost ? ' ghost' : '');
     el.textContent = b.label;
+    if (b.change) {
+      const sub = document.createElement('small');
+      sub.textContent = `${b.change.what} ${b.change.from} → ${b.change.to}`;
+      el.appendChild(sub);
+    }
     if (b.action?.type === 'option') {
       if (historical) el.disabled = true;
       else optionButtons.add(el);
@@ -175,9 +191,13 @@ function renderChips(chips = []) {
   box.innerHTML = '';
   for (const c of chips) {
     const el = document.createElement('span');
-    el.className = 'chip' + (c.accent ? ' accent' : '') + (c.kind === 'price' ? ' price' : '');
+    el.className = 'chip' + (c.accent ? ' accent' : '') + (c.kind === 'price' || c.kind === 'menu' ? ' ' + c.kind : '');
     el.textContent = c.label;
-    if (c.kind === 'price') { el.title = '눌러서 예산 정하기'; el.onclick = e => { if (e.target === el) budgetButtons(); }; }
+    if (c.kind === 'price') { el.title = '눌러서 예산 바꾸기'; el.onclick = e => { if (e.target === el) budgetButtons(); }; }
+    if (c.kind === 'menu' && categories.length) {
+      el.title = '눌러서 음식 바꾸기';
+      el.onclick = e => { if (e.target === el) buttons(categories.filter(x => x !== c.label).map(x => ({ label: x, action: { type: 'apply', cond: { menu: x } } }))); };
+    }
     if (c.remove) {
       const x = document.createElement('button');
       x.type = 'button'; x.textContent = '×'; x.setAttribute('aria-label', `${c.label} 지우기`);
@@ -188,7 +208,9 @@ function renderChips(chips = []) {
   }
 }
 
-function card(c, i) {
+const QUOTE_MAX = 40;
+const short = (text, max) => text.length > max ? text.slice(0, max - 1) + '…' : text;
+function card(c, i, common = []) {
   const params = new URLSearchParams({ store: c.storeId, from: 'recommend' });
   if (c.menuId) params.set('menu', c.menuId);
   const tags = [
@@ -200,15 +222,16 @@ function card(c, i) {
     c.budgetNote && `<span class="tag partial">${esc(c.budgetNote)}</span>`,
     c.partial && `<span class="tag partial">일부 조건만 맞아요</span>`,
   ].filter(Boolean).join('');
+  const own = c.checks.filter(x => !common.includes(x));
   return `<div class="card">
-    <div class="head"><span class="name">${esc(c.name)}</span><span class="rank">${c.score ? (i + 1) + '위 · ' : ''}${c.rating ? '★ ' + esc(c.rating) : '평점 정보 없음'}</span></div>
     <div class="menu">${(c.items ?? [{ name: c.menu, qty: c.qty }]).map(line =>
       esc(line.name) + (c.items || line.qty > 1 ? ' × ' + esc(line.qty) : '')).join(' + ')}</div>
     <div class="total">${won(c.total)} <span class="rank">예상 총액 · 배달비 포함</span></div>
-    <div class="checks">${c.checks.map(x => '✓ ' + esc(x)).join(' ')}</div>
+    <div class="head"><span class="name">${esc(c.name)}</span><span class="rank">${c.score ? (i + 1) + '위 · ' : ''}${c.rating ? '★ ' + esc(c.rating) : '평점 정보 없음'}</span></div>
+    ${own.length ? `<div class="checks">${own.map(x => '✓ ' + esc(x)).join(' ')}</div>` : ''}
     ${tags ? `<div class="tags">${tags}</div>` : ''}
     ${c.reason ? `<div class="reason">${esc(c.reason)}</div>` : ''}
-    ${c.quote ? `<div class="quote"><small>사장님 설명</small>“${esc(c.quote)}”</div>` : ''}
+    ${c.quote ? `<div class="quote"><small>사장님 메뉴 소개</small>“${esc(short(c.quote, QUOTE_MAX))}”</div>` : ''}
     <div class="card-actions">
       <a class="order" href="index.html?${esc(params.toString())}">가게·메뉴 보기</a>
       ${c.menuId ? '<button type="button" class="btn add-recommendation">장바구니 담기</button>' : ''}
@@ -219,7 +242,10 @@ function card(c, i) {
 
 let addingMenu = false;
 function renderCards(cards) {
-  const wrap = add(cards.map(card).join(''), 'cards');
+  // 모든 카드에 똑같은 ✓는 위에 한 번만, 카드엔 그 가게만 다른 항목
+  const common = cards.length > 1 ? cards[0].checks.filter(x => cards.every(c => c.checks.includes(x))) : [];
+  if (common.length) add(`${cards.length === 3 ? '세' : cards.length} 곳 모두: ${common.map(x => '✓ ' + esc(x)).join(' · ')}`, 'common');
+  const wrap = add(cards.map((c, i) => card(c, i, common)).join(''), 'cards');
   [...wrap.children].forEach((element, index) => {
     const button = element.querySelector('.add-recommendation');
     if (!button) return;
@@ -255,6 +281,17 @@ function renderCards(cards) {
   });
 }
 
+// ponytail: 아직 저장하지 않음. 노출 집계 테이블(P1-5)이 생기면 그 행에 붙여 저장.
+function feedback() {
+  const box = add('<span>이 추천 괜찮았어요?</span>', 'feedback');
+  for (const [label, text] of [['👍', '좋았어요'], ['👎', '별로였어요']]) {
+    const b = document.createElement('button');
+    b.type = 'button'; b.className = 'btn ghost'; b.textContent = label; b.setAttribute('aria-label', text);
+    b.onclick = () => { box.textContent = '의견 고마워요!'; };
+    box.appendChild(b);
+  }
+}
+
 function render(r, historical = false) {
   renderChips(r.chips);
   if (!r.preserveResults) {
@@ -272,6 +309,7 @@ function render(r, historical = false) {
   if (r.cards?.length) {
     renderCards(r.cards);
     if (!r.lookup) add('광고 없이 조건으로만 골랐어요', 'noad');
+    if (!historical && !r.lookup) feedback();
   }
   if (r.selected) renderCards([r.selected]);
   if (r.followUp) add(esc(r.followUp), 'msg bot');
@@ -322,22 +360,38 @@ $('form').onsubmit = e => {
   send({ type: 'text', text: t }, t);
 };
 
+const EXAMPLES = ['혼자 먹어요', '둘이 먹어요', '2만 원 이하', '가성비', '프랜차이즈 말고', '매운 거'];
+let categories = [];
 async function chooseRegion() {
-  const box = add('지역을 불러오는 중…', 'msg bot');
-  const row = add('', 'regions');
+  const start = add('', 'start');
+  const box = start.appendChild(document.createElement('b'));
+  box.textContent = '지역을 불러오는 중…';
+  const row = start.appendChild(document.createElement('div'));
+  row.className = 'regions';
+  const step2 = start.appendChild(document.createElement('b'));
+  step2.textContent = '② 먹고 싶은 음식 말하기';
+  const examples = start.appendChild(document.createElement('div'));
+  examples.className = 'examples';
+  for (const text of EXAMPLES) {
+    const chip = document.createElement('button');
+    chip.type = 'button'; chip.className = 'chip'; chip.textContent = text;
+    chip.onclick = () => { const v = $('input').value.trim(); $('input').value = v ? v + ', ' + text : text; $('input').focus(); };
+    examples.appendChild(chip);
+  }
   try {
     const response = await fetch('/api/recommend');
     const data = await response.json();
     if (!response.ok || !data.regions?.length) throw new Error('Missing regions');
-    const categories = $('category');
-    categories.replaceChildren(new Option('카테고리 변경', ''));
-    for (const category of data.categories ?? []) categories.add(new Option(category, category));
-    categories.onchange = () => {
-      const value = categories.value;
-      categories.value = '';
+    categories = data.categories ?? [];
+    const categorySelect = $('category');
+    categorySelect.replaceChildren(new Option('카테고리 변경', ''));
+    for (const category of categories) categorySelect.add(new Option(category, category));
+    categorySelect.onchange = () => {
+      const value = categorySelect.value;
+      categorySelect.value = '';
       if (value && !busy) void send({ type: 'apply', cond: { menu: value } }, value);
     };
-    box.textContent = '어느 지역에서 찾아볼까요?';
+    box.textContent = '① 배달받을 동네';
     const select = document.createElement('select');
     regionSelect = select;
     select.setAttribute('aria-label', '추천 지역');
@@ -358,9 +412,23 @@ async function chooseRegion() {
     const retry = document.createElement('button');
     retry.className = 'btn';
     retry.textContent = '다시 시도';
-    retry.onclick = () => { box.remove(); row.remove(); void chooseRegion(); };
+    retry.onclick = () => { start.remove(); void chooseRegion(); };
     row.appendChild(retry);
   }
+}
+
+const Speech = window.SpeechRecognition || window.webkitSpeechRecognition;
+if (Speech) {
+  const mic = $('mic');
+  mic.hidden = false;
+  mic.onclick = () => {
+    const rec = new Speech();
+    rec.lang = 'ko-KR';
+    rec.onresult = e => { $('input').value = e.results[0][0].transcript; $('input').focus(); };
+    rec.onend = () => { mic.textContent = '🎤'; };
+    mic.textContent = '…';
+    rec.start();
+  };
 }
 
 void chooseRegion();
