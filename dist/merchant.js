@@ -17,7 +17,7 @@ let busy = false;
 const pageSize = 20;
 const dayKey = value => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
-const action = (label, mode, value = "", style = "secondary") => '<button class="' + style + '" data-mode="' + mode + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
+const action = (label, mode, value = "", style = "secondary") => '<button type="button" class="' + style + '" data-mode="' + mode + '" data-value="' + esc(value) + '">' + esc(label) + '</button>';
 
 async function selectStore(id) {
   menus = id ? await demo("store_menus", { target: id }) : [];
@@ -27,7 +27,7 @@ async function selectStore(id) {
 
 async function load() {
   [catalog, allOrders] = await Promise.all([
-    demo("catalog", { stores_only: true, include_order_stores: true }), demo("orders")
+    demo("catalog", { stores_only: true, include_order_stores: true, include_menu_details: true }), demo("orders")
   ]);
   await selectStore(catalog.stores.some(store => store.id === storeId) ? storeId : catalog.stores[0]?.id);
   renderStoreSelector();
@@ -88,13 +88,20 @@ function history() {
 
 function menu() {
   const item = menus.find(row => row.id === editing);
+  const details = catalog.menu_details?.[item?.id] ?? {};
   return '<section class="panel"><h2>' + (item ? "메뉴 수정" : "메뉴 등록") + '</h2><form id="menu-form" class="menu-form">' +
     '<label>메뉴명<input name="name" required maxlength="80" value="' + esc(item?.name) + '"></label>' +
     '<label>가격 (원)<input name="price" type="number" min="1" max="1000000" required value="' + esc(item?.price) + '"></label>' +
-    '<label>설명<input name="description" maxlength="240" value="' + esc(item?.description) + '"></label>' +
-    '<label class="check"><input type="checkbox" name="available"' + (item?.available !== false ? " checked" : "") + '>판매 중</label>' +
+    '<label>맛<input name="taste" maxlength="60" placeholder="예: 맵지 않은 간장 맛" value="' + esc(details.taste) + '"></label>' +
+    '<label>몇 인분<input name="servings" type="number" min="1" max="20" placeholder="예: 2" value="' + esc(details.servings) + '"></label>' +
+    '<label>양·구성<input name="portion" maxlength="60" placeholder="예: 닭다리살 300g과 소스" value="' + esc(details.portion) + '"></label>' +
+    '<label>특징<input name="features" maxlength="100" placeholder="예: 순살, 바삭한 튀김옷" value="' + esc(details.features) + '"></label>' +
+    '<label class="menu-form-wide">설명 메모<textarea name="notes" maxlength="240" rows="2" placeholder="조리 방법이나 더 알리고 싶은 내용을 적어 주세요">' + esc(details.notes) + '</textarea></label>' +
+    '<div class="menu-form-wide menu-form-actions">' + action("AI 설명 만들기", "draft-description") + '</div>' +
+    '<label class="menu-form-wide">고객에게 표시할 설명<textarea name="description" maxlength="240" rows="3" placeholder="설명을 직접 작성하거나 AI 초안을 만들어 편집하세요">' + esc(item?.description) + '</textarea></label>' +
+    '<div class="menu-form-wide menu-form-actions"><label class="check"><input type="checkbox" name="available"' + (item?.available !== false ? " checked" : "") + '>판매 중</label>' +
     '<button type="submit" class="primary">' + (item ? "수정 저장" : "메뉴 등록") + '</button>' +
-    (item ? action("취소", "cancel-edit") : '') + '</form></section><section class="panel"><h2>메뉴 목록</h2>' +
+    (item ? action("취소", "cancel-edit") : '') + '</div></form></section><section class="panel"><h2>메뉴 목록</h2>' +
     (menus.length ? '<div class="table-wrap"><table><thead><tr><th>메뉴명</th><th>가격</th><th>판매 상태</th><th>관리</th></tr></thead><tbody>' +
       menus.map(row => '<tr><td><strong>' + esc(row.name) + '</strong><small>' + esc(row.description) +
       '</small></td><td>' + won(row.price) + '</td><td>' + (row.available ? "판매 중" : "품절") +
@@ -172,11 +179,54 @@ async function run(work, button) {
   }
 }
 
+function readMenuForm(raw) {
+  const servings = raw.get('servings');
+  return {
+    name: raw.get('name').trim(), price: Number(raw.get('price')),
+    description: raw.get('description').trim(), available: raw.has('available'),
+    details: {
+      taste: raw.get('taste').trim(), servings: servings ? Number(servings) : null,
+      portion: raw.get('portion').trim(), features: raw.get('features').trim(), notes: raw.get('notes').trim(),
+    },
+  };
+}
+
+async function draftDescription(control) {
+  const form = control.form;
+  if (!form.reportValidity()) return;
+  const { name, price, details, description } = readMenuForm(new FormData(form));
+  message.textContent = '설명 초안을 만드는 중입니다.';
+  form.inert = true;
+  try {
+    const response = await fetch('/api/menu-description', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, price, ...details, notes: details.notes || description }),
+      signal: AbortSignal.timeout(15000),
+    });
+    const draft = await response.json().catch(() => null);
+    if (!response.ok || typeof draft?.description !== 'string') {
+      throw new Error(draft?.error || '설명 초안을 만들지 못했습니다. 직접 작성하거나 다시 시도해 주세요.');
+    }
+    if (!form.isConnected) return;
+    form.elements.description.value = draft.description;
+    message.textContent = draft.provider === 'gemini'
+      ? 'AI 초안을 만들었습니다. 설명을 확인하고 저장해 주세요.'
+      : '입력 내용을 정리했습니다. 설명을 확인하고 저장해 주세요.';
+  } catch (error) {
+    throw new Error(error.name === 'TimeoutError' || error instanceof TypeError
+      ? '설명 초안을 불러오지 못했습니다. 직접 작성하거나 다시 시도해 주세요.' : error.message);
+  } finally {
+    form.inert = false;
+  }
+  form.elements.description.focus();
+}
+
 document.addEventListener("click", event => {
   const control = event.target.closest("[data-tab], [data-mode]");
   if (!control || busy) return;
   if (control.dataset.tab) { tab = control.dataset.tab; render(); return; }
   const { mode, value } = control.dataset;
+  if (mode === 'draft-description') { void run(() => draftDescription(control), control); return; }
   void run(async () => {
     if (mode === "refresh") await load();
     if (mode === "page") page = Number(value);
@@ -224,12 +274,14 @@ content.addEventListener("submit", event => {
   const raw = new FormData(form);
   void run(async () => {
     if (form.id === "menu-form") {
-      const item = { name: raw.get("name").trim(), description: raw.get("description").trim(), price: Number(raw.get("price")), available: raw.has("available") };
+      const item = readMenuForm(raw);
       if (!item.name) throw new Error("메뉴명을 입력해 주세요.");
       await demo("save_menu", { target: storeId, id: editing, ...item });
       editing = undefined;
       await load();
-      message.textContent = "메뉴를 저장했습니다.";
+      message.textContent = catalog.menu_details
+        ? "메뉴를 저장했습니다. 이 브라우저의 손님 추천에 반영됩니다."
+        : "메뉴를 저장했습니다. 추천 연동에 필요한 DB 업데이트를 확인해 주세요.";
     }
     if (form.classList.contains("reply-form")) {
       const reply = raw.get("reply").trim();
