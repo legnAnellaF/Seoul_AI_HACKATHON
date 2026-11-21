@@ -28,6 +28,24 @@ const textTurn = (engine, previous, text, ai = noGemini) =>
   engine.handle(previous?.state, { type: 'text', text }, ai);
 const cards = turn => turn.reply.cards?.map(c => c.storeId) ?? [];
 
+test('recommends only open catalog stores and marks good-price stores in new categories', async () => {
+  const data = {
+    stores: [
+      { id: 'open', name: '열린 버거', is_open: true, is_good_price: true },
+      { id: 'closed', name: '닫힌 버거', is_open: false, is_good_price: true },
+    ].map(store => ({ ...store, category: '패스트푸드', region: '서초구', dong: '서초4동', tip: 1000, rating: null })),
+    menus: [
+      { id: '1', store: 'open', name: '치즈버거', price: 8000, desc: '' },
+      { id: '2', store: 'closed', name: '치즈버거', price: 6000, desc: '' },
+    ],
+  };
+  const engine = createEngine(data);
+  const region = await engine.handle(null, { type: 'dong', dong: '서초구' }, noGemini);
+  const result = await textTurn(engine, region, '치즈버거 먹고 싶어');
+  assert.deepEqual(cards(result), ['open']);
+  assert.equal(result.reply.cards[0].isGoodPrice, true);
+});
+
 test('requires cheese quantity evidence, diversifies brands and answers franchise questions in context', async () => {
   const pizza = [
     ['chain-one', '오븐피자 잠실점', true, '치즈 듬뿍', 18000],
@@ -356,13 +374,13 @@ test('[P0-2] AI ② 입력은 상한까지만, 앞부분이 아니라 점수 순
 test('[P0-4] 보정 별점·신규 가게·영업 여부', async () => {
   const stores = [], menus = [];
   const shop = (id, rating, reviews, extra = {}) => {
-    stores.push({ id, region: '용산구', dong: '이촌동', category: '분식', name: id + '분식', tip: 1000, rating, reviews, ...extra });
+    stores.push({ id, region: '용산구', dong: '이촌동', category: '분식', name: id + '분식', tip: 1000, rating, review_count: reviews, ...extra });
     menus.push({ id: id + '-1', store: id, name: '떡볶이', price: 9000, desc: '' });
   };
   shop('lucky-one', 5.0, 1);       // 리뷰 1개짜리 5.0
   shop('steady', 4.7, 500);        // 리뷰 많은 4.7
   shop('newbie', null, 0);         // 리뷰 0개 신규
-  shop('closed', 4.9, 300, { open: false });
+  shop('closed', 4.9, 300, { is_open: false });
   shop('avg-a', 4.0, 200); shop('avg-b', 4.2, 200);
   const engine = createEngine({ stores, menus });
   const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
@@ -375,7 +393,7 @@ test('[P0-4] 보정 별점·신규 가게·영업 여부', async () => {
 test('[P0-4] 리뷰 0개 신규 가게는 후보에서 빠지지 않고, open 정보가 없으면 지금처럼 영업중으로 본다', async () => {
   const engine = createEngine({
     stores: [
-      { id: 'n1', region: '용산구', dong: '이촌동', category: '분식', name: '새가게', tip: 1000, rating: null, reviews: 0, open: true },
+      { id: 'n1', region: '용산구', dong: '이촌동', category: '분식', name: '새가게', tip: 1000, rating: null, review_count: 0, is_open: true },
       { id: 'n2', region: '용산구', dong: '이촌동', category: '분식', name: '옛가게', tip: 1000, rating: 4.4 },
     ],
     menus: [

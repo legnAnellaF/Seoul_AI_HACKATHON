@@ -218,6 +218,7 @@ function card(c, i, common = []) {
     c.setMenu && '<span class="tag">세트 메뉴</span>',
     c.portionNote && `<span class="tag">${esc(c.portionNote)}</span>`,
     c.valueLabel && `<span class="tag">${esc(c.valueLabel)}</span>`,
+    c.isGoodPrice && '<span class="tag">착한가게</span>',
     c.isNew && `<span class="tag new">새로 생긴 가게</span>`,
     c.budgetNote && `<span class="tag partial">${esc(c.budgetNote)}</span>`,
     c.partial && `<span class="tag partial">일부 조건만 맞아요</span>`,
@@ -259,7 +260,9 @@ function renderCards(cards) {
       status.hidden = false;
       status.textContent = '메뉴를 확인하고 있어요…';
       try {
-        const { stores, menus } = await demo('catalog');
+        const [{ stores }, menus] = await Promise.all([
+          demo('catalog', { stores_only: true }), demo('store_menus', { target: item.storeId }),
+        ]);
         const store = stores.find(row => row.id === item.storeId);
         const lines = (item.items ?? [{ menuId: item.menuId, qty: item.qty || 1 }]).map(line => ({
           item: menus.find(row => row.id === line.menuId && row.store_id === item.storeId),
