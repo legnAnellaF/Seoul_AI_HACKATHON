@@ -23,7 +23,7 @@ add('gangdong-cheap-gukbap', '강동구', '성내동', '한식', '성내식당',
 add('outside-seoul', '원미구', '상동', '치킨', '상동닭집', '후라이드치킨', 11000);
 snapshot.menus.push({ id: 'seocho-side', store: 'seocho-chicken', name: '등심돈까스', price: 6000, desc: '푸짐한 돈까스' });
 
-const noGemini = new Proxy({}, { get: () => async () => { throw Error('Gemini unavailable'); } });
+const noGemini = new Proxy({}, { get: () => async () => { throw Error('LLM unavailable'); } });
 const textTurn = (engine, previous, text, ai = noGemini) =>
   engine.handle(previous?.state, { type: 'text', text }, ai);
 const cards = turn => turn.reply.cards?.map(c => c.storeId) ?? [];
@@ -343,4 +343,89 @@ test('acknowledges a previous recommendation without re-running the search', asy
   const switched = await textTurn(engine, chosen, '마음에 드는데 중식으로 바꿔줘');
   assert.equal(switched.state.cond.menu, '중식');
   assert.equal(switched.reply.selected, undefined);
+});
+
+test('[P0-2] AI ② 입력은 상한까지만, 앞부분이 아니라 점수 순으로 보내고 선택지 가게는 코드가 근거로 계산한다', async () => {
+  const { AI2_MAX_STORES, AI2_MAX_MENUS_PER_STORE, AI2_DESC_MAX_CHARS } = await import('../lib/engine.js');
+  const stores = [], menus = [];
+  for (let i = 0; i < 20; i++) {
+    const id = 'big-' + String(i).padStart(2, '0');
+    // 뒤쪽 가게일수록 별점이 높다 → 앞부분 자르기면 뽑히지 않는다
+    stores.push({ id, region: '서초구', dong: '서초4동', category: '치킨', name: '닭집' + i, tip: 1000, rating: 3.5 + i * 0.07 });
+    for (let k = 0; k < 6; k++) menus.push({ id: `${id}-${k}`, store: id, name: (i % 2 ? '순살' : '뼈') + '치킨' + k, price: 18000 + k * 100, desc: '가'.repeat(150) });
+  }
+  const engine = createEngine({ stores, menus });
+  let payload;
+  const ai = {
+    parse: async () => { throw Error('LLM unavailable'); },
+    judge: async () => { throw Error('LLM unavailable'); },
+    question: async p => { payload = p; return { question: '순살과 뼈 중 어느 쪽?', options: [{ label: '순살', store_ids: [] }, { label: '뼈', store_ids: ['big-00'] }] }; },
+  };
+  const turn = await textTurn(engine, null, '서초구 치킨', ai);
+  assert.equal(payload.stores.length, AI2_MAX_STORES);
+  assert.ok(payload.stores.every(s => s.menus.length <= AI2_MAX_MENUS_PER_STORE && s.menus.every(m => m.desc.length <= AI2_DESC_MAX_CHARS)));
+  assert.ok(payload.stores.some(s => s.store_id === 'big-19'));
+  assert.ok(!payload.stores.some(s => s.store_id === 'big-00'));
+  // AI가 store_ids를 비워 보내도 남은 20곳 전체에서 근거로 다시 센다
+  assert.ok(turn.reply.buttons.some(b => b.label === '순살 (10곳)'));
+  assert.ok(turn.reply.buttons.some(b => b.label === '뼈 (10곳)'));
+});
+
+test('[P0-4] 보정 별점·신규 가게·영업 여부', async () => {
+  const stores = [], menus = [];
+  const shop = (id, rating, reviews, extra = {}) => {
+    stores.push({ id, region: '용산구', dong: '이촌동', category: '분식', name: id + '분식', tip: 1000, rating, review_count: reviews, ...extra });
+    menus.push({ id: id + '-1', store: id, name: '떡볶이', price: 9000, desc: '' });
+  };
+  shop('lucky-one', 5.0, 1);       // 리뷰 1개짜리 5.0
+  shop('steady', 4.7, 500);        // 리뷰 많은 4.7
+  shop('newbie', null, 0);         // 리뷰 0개 신규
+  shop('closed', 4.9, 300, { is_open: false });
+  shop('avg-a', 4.0, 200); shop('avg-b', 4.2, 200);
+  const engine = createEngine({ stores, menus });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.equal(cards(turn)[0], 'steady');   // 리뷰 1개 5.0 가게가 1등이 아님
+  assert.match(turn.reply.text, /남은 5곳/); // 6곳 중 영업 안 하는 1곳만 빠짐 (신규 가게는 남음)
+  assert.ok(cards(turn).includes('newbie'));
+  assert.ok(!cards(turn).includes('closed'));
+});
+
+test('[P0-4] 리뷰 0개 신규 가게는 후보에서 빠지지 않고, open 정보가 없으면 지금처럼 영업중으로 본다', async () => {
+  const engine = createEngine({
+    stores: [
+      { id: 'n1', region: '용산구', dong: '이촌동', category: '분식', name: '새가게', tip: 1000, rating: null, review_count: 0, is_open: true },
+      { id: 'n2', region: '용산구', dong: '이촌동', category: '분식', name: '옛가게', tip: 1000, rating: 4.4 },
+    ],
+    menus: [
+      { id: 'n1-1', store: 'n1', name: '떡볶이', price: 8000, desc: '' },
+      { id: 'n2-1', store: 'n2', name: '떡볶이', price: 8000, desc: '' },
+    ],
+  });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.deepEqual(cards(turn).sort(), ['n1', 'n2']);
+});
+
+test('[P0-4] 메뉴에 main 표시가 있으면 그 메뉴를 대표 메뉴로 쓴다', async () => {
+  const engine = createEngine({
+    stores: [{ id: 'm1', region: '용산구', dong: '이촌동', category: '분식', name: '김밥집', tip: 1000, rating: 4.5 }],
+    menus: [
+      { id: 'm1-1', store: 'm1', name: '참치김밥', price: 5000, desc: '' },
+      { id: 'm1-2', store: 'm1', name: '라볶이', price: 9000, desc: '', main: true },
+    ],
+  });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.match(turn.reply.cards[0].menu, /라볶이/);
+});
+
+test('[P1-3] 양보안에 바뀌는 조건을 from → to로 담는다', async () => {
+  const stores = [], menus = [];
+  for (const [id, franchise] of [['a', false], ['b', false], ['c', true]]) {
+    stores.push({ id, region: '서초구', dong: '서초4동', category: '치킨', name: id + '닭', tip: 1000, rating: 4.5, franchise });
+    menus.push({ id: id + '-1', store: id, name: '후라이드치킨', price: 18000, desc: '' });
+  }
+  const turn = await textTurn(createEngine({ stores, menus }), null, '서초구 치킨 프랜차이즈 말고');
+  assert.equal(turn.reply.cards.length, 2);
+  const b = turn.reply.buttons.find(b => b.change);
+  assert.deepEqual(b.change, { what: '프랜차이즈', from: '제외', to: '포함' });
+  assert.deepEqual(b.action, { type: 'apply', cond: { franchise: 'none' } });
 });
