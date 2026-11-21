@@ -352,3 +352,49 @@ test('[P0-2] AI ② 입력은 상한까지만, 앞부분이 아니라 점수 순
   assert.ok(turn.reply.buttons.some(b => b.label === '순살 (10곳)'));
   assert.ok(turn.reply.buttons.some(b => b.label === '뼈 (10곳)'));
 });
+
+test('[P0-4] 보정 별점·신규 가게·영업 여부', async () => {
+  const stores = [], menus = [];
+  const shop = (id, rating, reviews, extra = {}) => {
+    stores.push({ id, region: '용산구', dong: '이촌동', category: '분식', name: id + '분식', tip: 1000, rating, reviews, ...extra });
+    menus.push({ id: id + '-1', store: id, name: '떡볶이', price: 9000, desc: '' });
+  };
+  shop('lucky-one', 5.0, 1);       // 리뷰 1개짜리 5.0
+  shop('steady', 4.7, 500);        // 리뷰 많은 4.7
+  shop('newbie', null, 0);         // 리뷰 0개 신규
+  shop('closed', 4.9, 300, { open: false });
+  shop('avg-a', 4.0, 200); shop('avg-b', 4.2, 200);
+  const engine = createEngine({ stores, menus });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.equal(cards(turn)[0], 'steady');   // 리뷰 1개 5.0 가게가 1등이 아님
+  assert.match(turn.reply.text, /남은 5곳/); // 6곳 중 영업 안 하는 1곳만 빠짐 (신규 가게는 남음)
+  assert.ok(cards(turn).includes('newbie'));
+  assert.ok(!cards(turn).includes('closed'));
+});
+
+test('[P0-4] 리뷰 0개 신규 가게는 후보에서 빠지지 않고, open 정보가 없으면 지금처럼 영업중으로 본다', async () => {
+  const engine = createEngine({
+    stores: [
+      { id: 'n1', region: '용산구', dong: '이촌동', category: '분식', name: '새가게', tip: 1000, rating: null, reviews: 0, open: true },
+      { id: 'n2', region: '용산구', dong: '이촌동', category: '분식', name: '옛가게', tip: 1000, rating: 4.4 },
+    ],
+    menus: [
+      { id: 'n1-1', store: 'n1', name: '떡볶이', price: 8000, desc: '' },
+      { id: 'n2-1', store: 'n2', name: '떡볶이', price: 8000, desc: '' },
+    ],
+  });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.deepEqual(cards(turn).sort(), ['n1', 'n2']);
+});
+
+test('[P0-4] 메뉴에 main 표시가 있으면 그 메뉴를 대표 메뉴로 쓴다', async () => {
+  const engine = createEngine({
+    stores: [{ id: 'm1', region: '용산구', dong: '이촌동', category: '분식', name: '김밥집', tip: 1000, rating: 4.5 }],
+    menus: [
+      { id: 'm1-1', store: 'm1', name: '참치김밥', price: 5000, desc: '' },
+      { id: 'm1-2', store: 'm1', name: '라볶이', price: 9000, desc: '', main: true },
+    ],
+  });
+  const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
+  assert.match(turn.reply.cards[0].menu, /라볶이/);
+});
