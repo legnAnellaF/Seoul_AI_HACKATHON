@@ -180,6 +180,8 @@ input[type="checkbox"] { width: 17px; height: 17px; accent-color: #b94322; }
 .address-map-pin::after { content: ""; position: absolute; inset: 6px; border-radius: 50%; background: white; }
 .map-locate { position: absolute; right: 14px; bottom: 28px; z-index: 500; width: 44px; height: 44px; border: 1px solid #d5dedb;
   background: #fff; color: var(--ink); border-radius: 50%; font-size: 23px; box-shadow: 0 2px 8px #0002; }
+.map-locate-top { top: 12px; left: 12px; right: auto; bottom: auto; width: auto; padding: 0 12px;
+  min-height: 44px; border-radius: 10px; font-size: 13px; font-weight: 750; }
 .map-address-panel { background: #fff; border-radius: 18px 18px 0 0; padding: 17px 15px; }
 .map-address-heading { font-size: 17px; }
 .map-address-panel p { margin: 0; font-size: 13px; }

@@ -1,7 +1,7 @@
 import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 import { addCartMenu, readCart as cart, setCartAccount, writeCart } from "./cart.js";
 import { customerData, customerRequest, notifySessionChange, reloadOnSessionChange } from "./customer-session.js";
-import { AGREEMENT_VERSION, entryTerms, finalTerms, signupDetailsError } from "./signup.js";
+import { AGREEMENT_VERSION, entryTerms, finalTerms, koreanAgeAtSignup, signupDetailsError } from "./signup.js";
 import { mountAddressPicker } from "./address-picker.js";
 
 const screen = document.querySelector("#screen");
@@ -197,7 +197,9 @@ function addressForm() {
 function addressPickerView() {
   return top("지도에서 위치 확인") + '<div class="address-picker">' +
     '<div class="address-map-area"><div class="address-map" aria-label="배달 위치 지도"></div>' +
-    '<span class="address-map-pin" aria-hidden="true"></span><button type="button" class="map-locate" aria-label="현재 위치 다시 찾기">⌖</button></div>' +
+    '<span class="address-map-pin" aria-hidden="true"></span>' +
+    '<button type="button" class="map-locate map-locate-top">⌖ 현재 위치로 돌아가기</button>' +
+    '<button type="button" class="map-locate" aria-label="현재 위치 다시 찾기">⌖</button></div>' +
     '<div class="pane stack map-address-panel"><strong class="map-address-heading">선택한 배달 주소</strong>' +
     '<p class="muted" id="map-address-status" role="status">지도에서 배달할 위치를 선택해 주세요.</p>' +
     '<form id="map-address-search" class="map-address-search"><label>도로명 또는 지번 주소' +
@@ -347,12 +349,15 @@ function signupForm() {
   return top("회원가입") + '<section class="pane stack signup-card"><p class="signup-step">2 / 3</p>' +
     '<h2>가입 정보를 입력해 주세요</h2><form id="signup-details" class="stack">' +
     '<label>휴대전화 번호<input name="phone" type="tel" autocomplete="tel" required maxlength="13" value="' + esc(data.phone) + '"></label>' +
-    '<label>생년월일<input name="birth" type="date" min="1900-01-01" autocomplete="bday" required value="' + esc(data.birth) + '"></label>' +
+    '<label>생년월일 8자리<input name="birth" inputmode="numeric" pattern="[0-9]{8}" maxlength="8" autocomplete="off" required placeholder="YYYYMMDD" value="' + esc(data.birth) + '"></label>' +
+    '<label>성별<select name="gender"><option value="">선택 안 함</option>' +
+    '<option value="male"' + (data.gender === "male" ? " selected" : "") + '>남성</option>' +
+    '<option value="female"' + (data.gender === "female" ? " selected" : "") + '>여성</option></select></label>' +
     '<label>이름<input name="name" autocomplete="name" required maxlength="30" value="' + esc(data.name) + '"></label>' +
     '<label>아이디<input name="identifier" autocomplete="username" autocapitalize="none" required maxlength="24" value="' + esc(data.identifier) + '"></label>' +
     '<label>비밀번호<input name="password" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>' +
     '<label>비밀번호 확인<input name="passwordConfirm" type="password" autocomplete="new-password" required minlength="8" maxlength="72"></label>' +
-    '<p class="muted signup-hint">휴대전화 번호와 생년월일은 이 화면에서만 확인합니다.</p>' +
+    '<p class="muted signup-hint">가입 시 계산한 세는나이와 선택한 성별이 계정에 기록됩니다. 휴대전화 번호와 생년월일은 이 화면에서만 확인합니다.</p>' +
     '<p id="signup-validation" class="signup-validation" role="status"></p>' +
     '<button type="submit" class="primary" disabled>다음</button></form></section>';
 }
@@ -360,7 +365,7 @@ function signupForm() {
 function refreshSignupForm(form) {
   const values = Object.fromEntries(new FormData(form));
   const message = signupDetailsError(values);
-  const complete = Object.values(values).every(Boolean);
+  const complete = Object.entries(values).every(([key, value]) => key === "gender" || !!value);
   form.querySelector("#signup-validation").textContent = complete ? message : "";
   form.querySelector('button[type="submit"]').disabled = !form.checkValidity() || !!message;
 }
@@ -656,8 +661,11 @@ screen.addEventListener("submit", event => {
       return;
     }
     if (form.id === "signup-final" && entryTerms.every(([key]) => signup.entry[key]) && finalTerms.every(([key]) => signup.final[key])) {
-      const { name, identifier, password } = signup.details;
-      const result = await customerRequest("register", { name, identifier, password, agreements: AGREEMENT_VERSION });
+      const { name, identifier, password, birth, gender } = signup.details;
+      const result = await customerRequest("register", {
+        name, identifier, password, agreements: AGREEMENT_VERSION,
+        koreanAge: koreanAgeAtSignup(birth), gender: gender || null,
+      });
       await signedIn(result.account, true);
       return;
     }

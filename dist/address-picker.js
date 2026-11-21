@@ -58,7 +58,7 @@ export function mountAddressPicker(root, options, onSave) {
   const save = root.querySelector("#map-address-save");
   const submit = save.querySelector('button[type="submit"]');
   const status = root.querySelector("#map-address-status");
-  const locate = root.querySelector(".map-locate");
+  const locateControls = root.querySelectorAll(".map-locate");
   let map, selected, pending, timer, results = [], active = true, moving = false, revision = 0;
 
   function cancel() {
@@ -103,6 +103,7 @@ export function mountAddressPicker(root, options, onSave) {
   const mapReady = loadMap().then(L => {
     if (!active) return;
     map = L.map(root.querySelector(".address-map"), { zoomControl: true }).setView(initialCenter, 16);
+    map.zoomControl.setPosition("topright");
     L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
       maxZoom: 19, attribution: '© <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>',
     }).addTo(map);
@@ -123,7 +124,7 @@ export function mountAddressPicker(root, options, onSave) {
 
   async function locateUser() {
     const version = invalidate();
-    locate.disabled = true;
+    locateControls.forEach(control => { control.disabled = true; });
     status.textContent = "현재 위치를 확인하는 중…";
     try {
       const coords = await currentCoordinates();
@@ -134,11 +135,11 @@ export function mountAddressPicker(root, options, onSave) {
     } catch (error) {
       if (active && version === revision) status.textContent = error.message;
     } finally {
-      if (active) locate.disabled = false;
+      if (active) locateControls.forEach(control => { control.disabled = false; });
     }
   }
 
-  locate.addEventListener("click", locateUser);
+  locateControls.forEach(control => control.addEventListener("click", locateUser));
   road.addEventListener("input", () => {
     invalidate();
     status.textContent = "검색을 눌러 입력한 주소의 위치를 확인해 주세요.";

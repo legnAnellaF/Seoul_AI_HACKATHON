@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { test } from "node:test";
 import customer from "../api/customer.js";
+import { AGREEMENT_VERSION } from "../dist/signup.js";
 
 const account = "11111111-1111-4111-8111-111111111111";
 const browser = "22222222-2222-4222-8222-222222222222";
@@ -57,16 +58,16 @@ test("registration requires agreement and signs in the newly enrolled username",
   });
   const form = {
     action: "register", identifier: "Sample_1", password: "test-only-password", name: "Tester",
-    phone: "unused", birth: "unused",
+    phone: "unused", birth: "unused", koreanAge: 27, gender: "female",
   };
   assert.equal((await request(form)).status, 400);
   assert.equal(payloads.length, 0);
-  const result = await request({ ...form, agreements: "2026-11-21" });
+  const result = await request({ ...form, agreements: AGREEMENT_VERSION });
   assert.equal(result.status, 200);
   assert.equal(result.body.account.identifier, "sample_1");
   assert.equal(result.headers["Set-Cookie"].length, 2);
   assert.deepEqual(payloads, [
-    { username: "sample_1", name: "Tester", password: form.password, agreements: "2026-11-21" },
+    { username: "sample_1", name: "Tester", password: form.password, agreements: AGREEMENT_VERSION, koreanAge: 27, gender: "female" },
     { email: "sample_1@bappilot.invalid", password: form.password },
   ]);
 });

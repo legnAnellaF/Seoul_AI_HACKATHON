@@ -1,4 +1,5 @@
 import { supabaseConfig } from "../dist/supabase-config.js";
+import { AGREEMENT_VERSION, validSignupDemographics } from "../dist/signup.js";
 
 const ACCESS = "__Host-bappilot-access";
 const REFRESH = "__Host-bappilot-refresh";
@@ -6,7 +7,6 @@ const REFRESH_AGE = 30 * 24 * 60 * 60;
 const ACCOUNT_DOMAIN = "@bappilot.invalid";
 const USERNAME = /^[a-z][a-z0-9_]{3,23}$/;
 const EMAIL = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
-const AGREEMENT_VERSION = "2026-11-21";
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
 const RPC_ACTIONS = new Set(["customer_orders", "customer_favorites", "customer_favorite", "place", "review"]);
 
@@ -98,11 +98,13 @@ async function signIn(res, credentials, registering) {
   }
   if (registering) {
     const name = typeof credentials.name === "string" ? credentials.name.trim() : "";
-    if (!name || name.length > 30 || password.length < 8 || credentials.agreements !== AGREEMENT_VERSION) {
-      return error(res, 400, "이름, 비밀번호와 필수 동의를 확인해 주세요.");
+    const { koreanAge, gender } = credentials;
+    if (!name || name.length > 30 || password.length < 8 || credentials.agreements !== AGREEMENT_VERSION ||
+        !validSignupDemographics(koreanAge, gender)) {
+      return error(res, 400, "가입 정보와 필수 동의를 확인해 주세요.");
     }
     const enrollment = await supabase("/functions/v1/customer-enroll", "POST", {
-      username: identifier, name, password, agreements: AGREEMENT_VERSION,
+      username: identifier, name, password, agreements: AGREEMENT_VERSION, koreanAge, gender,
     });
     if (!enrollment.ok) {
       if (enrollment.status === 409) return error(res, 409, "이미 사용 중인 아이디입니다.", "username_taken");
