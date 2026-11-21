@@ -229,6 +229,13 @@ td small { display: block; margin-top: 3px; }
 .menu-form-actions { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; }
 .menu-form .check { display: flex; align-items: center; min-height: 39px; }
 .menu-form button { width: fit-content; }
+.menu-interview { padding: 14px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); }
+.menu-interview:not([hidden]) { display: grid; gap: 10px; }
+.menu-question-step { font-size: 13px; font-weight: 700; color: var(--muted); }
+.menu-interview label { overflow-wrap: anywhere; }
+.menu-details { border-top: 1px solid var(--line); padding-top: 12px; }
+.menu-details summary { width: fit-content; cursor: pointer; font-weight: 700; }
+.menu-detail-fields { margin-top: 14px; }
 .merchant-review { padding: 12px 0; border-top: 1px solid var(--line); }
 .merchant-review p { margin: 6px 0 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
 .reply-form .primary { justify-self: start; }

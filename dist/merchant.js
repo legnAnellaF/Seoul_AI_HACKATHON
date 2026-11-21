@@ -14,6 +14,13 @@ let page = 0;
 let orderFilter = "";
 let monthFilter = "";
 let busy = false;
+let interview;
+const interviewSteps = [
+  { key: 'portion', label: '양', max: 60 },
+  { key: 'composition', label: '구성', max: 240 },
+  { key: 'taste', label: '맛', max: 60 },
+  { key: 'features', label: '특징', max: 100 },
+];
 const pageSize = 20;
 const dayKey = value => new Intl.DateTimeFormat("sv-SE", { timeZone: "Asia/Seoul", year: "numeric", month: "2-digit", day: "2-digit" }).format(new Date(value));
 const empty = text => '<p class="empty">' + esc(text) + '</p>';
@@ -92,16 +99,20 @@ function menu() {
   return '<section class="panel"><h2>' + (item ? "메뉴 수정" : "메뉴 등록") + '</h2><form id="menu-form" class="menu-form">' +
     '<label>메뉴명<input name="name" required maxlength="80" value="' + esc(item?.name) + '"></label>' +
     '<label>가격 (원)<input name="price" type="number" min="1" max="1000000" required value="' + esc(item?.price) + '"></label>' +
-    '<label>맛<input name="taste" maxlength="60" placeholder="예: 맵지 않은 간장 맛" value="' + esc(details.taste) + '"></label>' +
-    '<label>몇 인분<input name="servings" type="number" min="1" max="20" placeholder="예: 2" value="' + esc(details.servings) + '"></label>' +
-    '<label>양·구성<input name="portion" maxlength="60" placeholder="예: 닭다리살 300g과 소스" value="' + esc(details.portion) + '"></label>' +
-    '<label>특징<input name="features" maxlength="100" placeholder="예: 순살, 바삭한 튀김옷" value="' + esc(details.features) + '"></label>' +
-    '<label class="menu-form-wide">설명 메모<textarea name="notes" maxlength="240" rows="2" placeholder="조리 방법이나 더 알리고 싶은 내용을 적어 주세요">' + esc(details.notes) + '</textarea></label>' +
-    '<div class="menu-form-wide menu-form-actions">' + action("AI 설명 만들기", "draft-description") + '</div>' +
+    '<div class="menu-form-wide menu-form-actions">' + action('AI 질문 시작', 'start-interview', '', 'primary') +
+    (item ? action('취소', 'cancel-edit') : '') + '</div>' +
+    '<section id="menu-interview" class="menu-form-wide menu-interview" aria-label="메뉴 설명 질문" hidden></section>' +
+    '<details id="menu-details" class="menu-form-wide menu-details"' + (item ? ' open' : '') + '><summary>메뉴 정보와 설명 직접 수정</summary>' +
+    '<div class="menu-form menu-detail-fields">' +
+    '<label>맛<input name="taste" maxlength="60" value="' + esc(details.taste) + '"></label>' +
+    '<label>몇 인분<input name="servings" type="number" min="1" max="20" value="' + esc(details.servings) + '"></label>' +
+    '<label>양<input name="portion" maxlength="60" value="' + esc(details.portion) + '"></label>' +
+    '<label>특징<input name="features" maxlength="100" value="' + esc(details.features) + '"></label>' +
+    '<label class="menu-form-wide">구성·설명 메모<textarea name="notes" maxlength="240" rows="2">' + esc(details.notes) + '</textarea></label>' +
     '<label class="menu-form-wide">고객에게 표시할 설명<textarea name="description" maxlength="240" rows="3" placeholder="설명을 직접 작성하거나 AI 초안을 만들어 편집하세요">' + esc(item?.description) + '</textarea></label>' +
     '<div class="menu-form-wide menu-form-actions"><label class="check"><input type="checkbox" name="available"' + (item?.available !== false ? " checked" : "") + '>판매 중</label>' +
     '<button type="submit" class="primary">' + (item ? "수정 저장" : "메뉴 등록") + '</button>' +
-    (item ? action("취소", "cancel-edit") : '') + '</div></form></section><section class="panel"><h2>메뉴 목록</h2>' +
+    '</div></div></details></form></section><section class="panel"><h2>메뉴 목록</h2>' +
     (menus.length ? '<div class="table-wrap"><table><thead><tr><th>메뉴명</th><th>가격</th><th>판매 상태</th><th>관리</th></tr></thead><tbody>' +
       menus.map(row => '<tr><td><strong>' + esc(row.name) + '</strong><small>' + esc(row.description) +
       '</small></td><td>' + won(row.price) + '</td><td>' + (row.available ? "판매 중" : "품절") +
@@ -157,6 +168,7 @@ function renderStoreSelector() {
 }
 
 function render() {
+  interview = undefined;
   document.querySelector("#dashboard-title").textContent = headings[tab];
   document.querySelector(".sidebar-shop strong").textContent = catalog.stores.find(store => store.id === storeId)?.name || "가게를 불러오는 중";
   document.querySelectorAll("[data-tab]").forEach(node => {
@@ -191,34 +203,106 @@ function readMenuForm(raw) {
   };
 }
 
-async function draftDescription(control) {
-  const form = control.form;
-  if (!form.reportValidity()) return;
-  const { name, price, details, description } = readMenuForm(new FormData(form));
-  message.textContent = '설명 초안을 만드는 중입니다.';
+async function requestMenuText(form, payload, waiting) {
+  message.textContent = waiting;
   form.inert = true;
   try {
     const response = await fetch('/api/menu-description', {
       method: 'POST', headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, price, ...details, notes: details.notes || description }),
+      body: JSON.stringify(payload),
       signal: AbortSignal.timeout(15000),
     });
-    const draft = await response.json().catch(() => null);
-    if (!response.ok || typeof draft?.description !== 'string') {
-      throw new Error(draft?.error || '설명 초안을 만들지 못했습니다. 직접 작성하거나 다시 시도해 주세요.');
-    }
-    if (!form.isConnected) return;
-    form.elements.description.value = draft.description;
-    message.textContent = draft.provider === 'gemini'
-      ? 'AI 초안을 만들었습니다. 설명을 확인하고 저장해 주세요.'
-      : '입력 내용을 정리했습니다. 설명을 확인하고 저장해 주세요.';
+    const data = await response.json().catch(() => null);
+    if (!response.ok || !data) throw new Error(data?.error || '메뉴 설명 서비스에 다시 연결해 주세요.');
+    return data;
   } catch (error) {
     throw new Error(error.name === 'TimeoutError' || error instanceof TypeError
-      ? '설명 초안을 불러오지 못했습니다. 직접 작성하거나 다시 시도해 주세요.' : error.message);
+      ? '메뉴 설명 서비스에 연결하지 못했습니다. 다시 시도해 주세요.' : error.message);
   } finally {
     form.inert = false;
   }
+}
+
+function renderQuestion() {
+  const { form, questions, answers, step } = interview;
+  const { key, label, max } = interviewSteps[step];
+  const panel = form.querySelector('#menu-interview');
+  panel.innerHTML = '<p class="menu-question-step">질문 ' + (step + 1) + '/' + interviewSteps.length + ' · ' + label + '</p>' +
+    '<label for="menu-answer">' + esc(questions[key]) + '</label>' +
+    '<textarea id="menu-answer" rows="2" maxlength="' + max + '" placeholder="답변을 적어 주세요">' + esc(answers[key]) + '</textarea>' +
+    '<div class="menu-form-actions">' +
+    action(step === interviewSteps.length - 1 ? '설명 초안 만들기' : '다음 질문', 'interview-next', '', 'primary') +
+    action('건너뛰기', 'interview-skip') + (step ? action('이전 질문', 'interview-back') : '') +
+    action('질문 닫기', 'interview-close', '', 'plain') + '</div>';
+  panel.hidden = false;
+  panel.querySelector('#menu-answer').focus();
+}
+
+async function startInterview(form) {
+  if (!form.elements.name.reportValidity() || !form.elements.price.reportValidity()) return;
+  const { name, price, details } = readMenuForm(new FormData(form));
+  const category = catalog.stores.find(store => store.id === storeId)?.category;
+  const { questions } = await requestMenuText(form, { action: 'questions', name, price, category }, '메뉴에 맞는 질문을 준비하고 있습니다.');
+  if (!interviewSteps.every(({ key }) => typeof questions?.[key] === 'string' && questions[key])) {
+    throw new Error('질문을 준비하지 못했습니다. 다시 시도해 주세요.');
+  }
+  if (!form.isConnected) return;
+  interview = {
+    form, name, price, questions, step: 0, servings: details.servings,
+    answers: { portion: details.portion, composition: details.notes, taste: details.taste, features: details.features },
+  };
+  form.elements.name.readOnly = true;
+  form.elements.price.readOnly = true;
+  form.querySelector('[data-mode="start-interview"]').hidden = true;
+  form.querySelector('#menu-details').hidden = true;
+  form.querySelector('button[type="submit"]').disabled = true;
+  message.textContent = '';
+  renderQuestion();
+}
+
+function closeInterview(form) {
+  form.elements.name.readOnly = false;
+  form.elements.price.readOnly = false;
+  form.querySelector('#menu-interview').hidden = true;
+  form.querySelector('#menu-interview').replaceChildren();
+  form.querySelector('#menu-details').hidden = false;
+  form.querySelector('[data-mode="start-interview"]').hidden = false;
+  form.querySelector('button[type="submit"]').disabled = false;
+  interview = undefined;
+}
+
+async function advanceInterview(mode, form) {
+  if (interview?.form !== form) return;
+  if (mode === 'interview-close') {
+    closeInterview(form);
+    form.querySelector('[data-mode="start-interview"]').focus();
+    return;
+  }
+  const { key } = interviewSteps[interview.step];
+  const field = form.querySelector('#menu-answer');
+  const answer = mode === 'interview-skip' ? '' : field.value.trim();
+  if (mode === 'interview-next' && !answer) throw new Error('답변을 적거나 건너뛰어 주세요.');
+  interview.answers[key] = answer;
+
+  if (mode === 'interview-back' || interview.step < interviewSteps.length - 1) {
+    interview.step += mode === 'interview-back' ? -1 : 1;
+    renderQuestion();
+    return;
+  }
+
+  const { name, price, answers, servings } = interview;
+  const draft = await requestMenuText(form, { name, price, answers, servings }, '답변을 바탕으로 설명 초안을 만드는 중입니다.');
+  if (typeof draft.description !== 'string' || !draft.details) throw new Error('설명 초안을 불러오지 못했습니다. 다시 시도해 주세요.');
+  for (const field of ['portion', 'taste', 'features', 'notes', 'servings']) {
+    form.elements[field].value = draft.details[field] ?? '';
+  }
+  form.elements.description.value = draft.description;
+  closeInterview(form);
+  form.querySelector('#menu-details').open = true;
   form.elements.description.focus();
+  message.textContent = draft.provider === 'gemini'
+    ? 'AI 초안을 만들었습니다. 설명을 확인하고 저장해 주세요.'
+    : '답변을 정리했습니다. 설명을 확인하고 저장해 주세요.';
 }
 
 document.addEventListener("click", event => {
@@ -226,7 +310,8 @@ document.addEventListener("click", event => {
   if (!control || busy) return;
   if (control.dataset.tab) { tab = control.dataset.tab; render(); return; }
   const { mode, value } = control.dataset;
-  if (mode === 'draft-description') { void run(() => draftDescription(control), control); return; }
+  if (mode === 'start-interview') { void run(() => startInterview(control.form), control); return; }
+  if (mode.startsWith('interview-')) { void run(() => advanceInterview(mode, control.form), control); return; }
   void run(async () => {
     if (mode === "refresh") await load();
     if (mode === "page") page = Number(value);
@@ -271,6 +356,11 @@ document.addEventListener("change", event => {
 content.addEventListener("submit", event => {
   event.preventDefault();
   const form = event.target;
+  if (form.id === 'menu-form' && interview?.form === form) return;
+  if (form.id === 'menu-form' && !form.querySelector('#menu-details').open) {
+    void run(() => startInterview(form), form.querySelector('[data-mode="start-interview"]'));
+    return;
+  }
   const raw = new FormData(form);
   void run(async () => {
     if (form.id === "menu-form") {
