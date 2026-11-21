@@ -26,7 +26,9 @@ export async function demo(action, payload = {}) {
   return data;
 }
 
-export const won = value => new Intl.NumberFormat("ko-KR").format(value) + "원";
+const numbers = new Intl.NumberFormat("ko-KR");
+export const count = value => numbers.format(value);
+export const won = value => count(value) + "원";
 export const date = value => new Intl.DateTimeFormat("ko-KR", {
   dateStyle: "medium", timeStyle: "short", timeZone: "Asia/Seoul"
 }).format(new Date(value));

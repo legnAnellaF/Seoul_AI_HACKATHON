@@ -1,4 +1,4 @@
-import { date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
+import { count, date, demo, esc, readLocal, saveLocal, statusLabels, won } from "./db.js";
 import { addCartMenu, readCart as cart, writeCart } from "./cart.js";
 
 const screen = document.querySelector("#screen");
@@ -6,11 +6,13 @@ const bar = document.querySelector("#checkout-bar");
 const message = document.querySelector("#customer-message");
 const icons = { chicken: 3, dessert: 4, pizza: 5, korean: 6, burger: 7, chinese: 8, more: 9 };
 const glyphs = { japanese: "🍣", western: "🍝", nearby: "📍" };
-const state = { categories: [], stores: [], menus: [], menuGroups: new Map(), query: "", addressQuery: "", listLimit: 30 };
+const state = { categories: [], stores: [], menuGroups: new Map(), menuMatches: new Set(), query: "", addressQuery: "", listLimit: 30 };
 let route = { name: "home" };
 let previous = [];
 let busy = false;
 let messageTimer;
+let searchTimer;
+let searchRequest = 0;
 const entryParams = new URLSearchParams(location.search);
 const linkedStore = entryParams.get("store");
 const linkedCart = entryParams.get("view") === "cart";
@@ -45,7 +47,12 @@ function open(name, value, tab = false) {
   else previous.push(route);
   route = { name, value };
   state.listLimit = 30;
-  if (name === "search") state.query = "";
+  if (name === "search") {
+    state.query = "";
+    state.menuMatches.clear();
+    searchRequest += 1;
+    clearTimeout(searchTimer);
+  }
   if (name === "addresses") state.addressQuery = "";
   render(true);
   if (name === "search") screen.querySelector("#search-query")?.focus();
@@ -66,7 +73,7 @@ function back() {
 }
 
 async function catalog() {
-  const { stores, menus } = await demo("catalog");
+  const { stores } = await demo("catalog", { stores_only: true });
   const preferred = [["chicken","치킨"],["dessert","카페/디저트"],["pizza","피자"],["korean","한식"],
     ["burger","버거"],["chinese","중식"],["japanese","일식"],["western","양식"]];
   const known = new Map(preferred);
@@ -75,13 +82,17 @@ async function catalog() {
   state.categories = [...preferred, ...[...additional].sort((a, b) => a[1].localeCompare(b[1], "ko"))]
     .map(([id, name]) => ({ id, name }));
   state.stores = stores;
-  state.menus = menus.filter(item => item.available);
-  state.menuGroups = new Map();
-  for (const item of state.menus) {
-    const group = state.menuGroups.get(item.store_id) || [];
-    group.push(item);
-    state.menuGroups.set(item.store_id, group);
-  }
+}
+
+async function loadMenus(id) {
+  const menus = await demo("store_menus", { target: id });
+  state.menuGroups.set(id, menus.filter(item => item.available));
+}
+
+function storeBadges(store) {
+  return '<span class="catalog-badges"><span class="catalog-badge ' + (store.is_open ? "is-open" : "") + '">' +
+    (store.is_open ? "배달 가능" : "배달 마감") + '</span>' +
+    (store.is_good_price ? '<span class="catalog-badge good-price">착한가게</span>' : '') + '</span>';
 }
 
 function categoryImage(id) {
@@ -150,7 +161,7 @@ function storeList(list) {
     '<article class="store-card"><button class="store-open" data-act="store" data-value="' + esc(store.id) + '">' +
     '<div class="media-placeholder" aria-hidden="true"></div><span class="store-card-text"><strong>' + esc(store.name) +
     '</strong><span>' + esc(store.district) + ' · ' + esc(store.category) + '</span><small>배달비 ' + won(store.delivery_fee) +
-    '</small></span></button>' + heart(store.id) + '</article>').join("") +
+    '</small>' + storeBadges(store) + '</span></button>' + heart(store.id) + '</article>').join("") +
     (list.length > state.listLimit ? button("가게 더 보기", "load-more") : '') + '</div>';
 }
 
@@ -169,13 +180,14 @@ function category() {
 
 function searchResults() {
   const q = state.query.trim().toLocaleLowerCase("ko");
-  const found = state.stores.filter(store => !q || [store.name, store.district, state.categories.find(cat => cat.id === store.category_id)?.name,
-    ...menusFor(store.id).map(menu => menu.name)].some(text => text?.toLocaleLowerCase("ko").includes(q)));
+  const found = state.stores.filter(store => !q || state.menuMatches.has(store.id) ||
+    [store.name, store.district, store.category, state.categories.find(cat => cat.id === store.category_id)?.name]
+      .some(text => text?.toLocaleLowerCase("ko").includes(q)));
   return found.length ? storeList(found) : empty("검색 조건과 일치하는 가게나 메뉴가 없습니다.");
 }
 
 function search() {
-  return top("검색") + '<div class="pane"><label class="search-field"><span class="glass" aria-hidden="true"></span><input id="search-query" type="search" aria-label="가게 또는 메뉴 검색" placeholder="가게 또는 메뉴 이름" value="' +
+  return top("검색") + '<div class="pane"><label class="search-field"><span class="glass" aria-hidden="true"></span><input id="search-query" type="search" maxlength="80" aria-label="가게 또는 메뉴 검색" placeholder="가게 또는 메뉴 이름" value="' +
     esc(state.query) + '"></label></div><div id="search-results">' + searchResults() + '</div>';
 }
 
@@ -186,24 +198,30 @@ function detail() {
   return top(store.name, icon("장바구니", "🛒", "cart")) +
     '<div class="media-placeholder store-hero" aria-hidden="true"></div><section class="pane store-detail">' +
     '<div class="spread"><h2>' + esc(store.name) + '</h2>' + heart(store.id) + '</div><p class="muted">' + esc(store.category) + ' · 합성 가게 데이터' +
-    '</p><div class="pills"><span class="active-pill">배달 시연</span></div><dl class="delivery-details"><div><dt>가게 평점</dt><dd>' +
-    esc(store.rating) + '</dd></div><div><dt>배달비</dt><dd>' + won(store.delivery_fee) +
-    '</dd></div><div><dt>가게 위치</dt><dd>' + esc(store.district) + '</dd></div></dl></section>' +
+    '</p>' + storeBadges(store) + '<dl class="delivery-details"><div><dt>가게 평점</dt><dd>' +
+    (store.rating == null ? "평점 정보 없음" : esc(store.rating)) +
+    (store.review_count == null ? "" : " · 리뷰 " + count(store.review_count) + "개") +
+    '</dd></div><div><dt>배달비</dt><dd>' + won(store.delivery_fee) +
+    '</dd></div><div><dt>가게 위치</dt><dd>' + esc(store.district) + '</dd></div><div><dt>노출 횟수</dt><dd>' +
+    count(store.exposure_count) + '회</dd></div></dl></section>' +
     '<section class="menu-section"><div class="pane"><span class="active-pill">전체 메뉴</span><h2>메뉴</h2></div>' +
     (items.length ? items.map(item => {
       const quantity = cart().find(row => row.id === item.id)?.quantity;
       return '<article class="menu-row" data-menu-id="' + esc(item.id) + '"><div><h3>' + esc(item.name) + '</h3><p class="muted">' + esc(item.description) +
         '</p><strong>' + won(item.price) + '</strong>' + (quantity ? '<small class="in-cart">담은 수량 ' + quantity + '</small>' : '') +
         '</div><div class="menu-image media-placeholder"><button class="menu-add" aria-label="' + esc(item.name + " 담기") +
-        '" data-act="add" data-value="' + esc(item.id) + '">+</button></div></article>';
+        '" data-act="add" data-value="' + esc(item.id) + '"' + (store.is_open ? "" : " disabled") + '>+</button></div></article>';
     }).join("") : empty("등록된 메뉴가 없습니다.")) + '</section>';
 }
 
-function syncCart() {
-  const menuById = new Map(state.menus.map(item => [item.id, item]));
-  writeCart(cart().flatMap(row => {
-    const item = menuById.get(row.id);
-    return item ? [{ ...row, ...item }] : [];
+async function syncCart() {
+  const rows = cart();
+  const ids = [...new Set(rows.map(row => row.store_id))].filter(id => getStore(id)?.is_open);
+  await Promise.all(ids.map(loadMenus));
+  writeCart(rows.flatMap(row => {
+    const store = getStore(row.store_id);
+    const item = menusFor(row.store_id).find(menu => menu.id === row.id);
+    return store?.is_open && item ? [{ ...row, ...item, store_name: store.name }] : [];
   }));
 }
 
@@ -285,7 +303,7 @@ function render(reset = false) {
     if (node.dataset.go === tab) node.setAttribute("aria-current", "page");
     else node.removeAttribute("aria-current");
   });
-  const rows = route.name === "store" ? cart().filter(item => item.store_id === route.value) :
+  const rows = route.name === "store" ? cart().filter(item => item.store_id === route.value && getStore(route.value)?.is_open) :
     route.name === "cart" ? cart().filter(item => item.selected) : [];
   const fee = route.name === "cart" ? [...new Set(rows.map(item => item.store_id))].reduce((sum, id) => sum + (getStore(id)?.delivery_fee || 0), 0) : 0;
   bar.innerHTML = rows.length ? '<button class="primary checkout-button" data-act="' + (route.name === "store" ? "cart" : "checkout") +
@@ -296,8 +314,11 @@ function updateCart(id, change) {
   const rows = cart();
   const row = rows.find(item => item.id === id);
   if (change === "add") {
-    const item = state.menus.find(menu => menu.id === id);
-    addCartMenu(item, getStore(item?.store_id));
+    const store = getStore(route.value);
+    if (!store?.is_open) return notify("현재 배달 주문을 받지 않는 가게입니다.");
+    const item = menusFor(store.id).find(menu => menu.id === id);
+    if (!item) return;
+    addCartMenu(item, store);
   } else if (change === "remove" || (change === "minus" && row?.quantity === 1)) writeCart(rows.filter(item => item.id !== id));
   else if (row) {
     if (change !== "minus" && row.quantity >= 20) return notify("메뉴당 최대 20개까지 담을 수 있습니다.");
@@ -315,7 +336,7 @@ async function checkout() {
   const address = activeAddress();
   const before = JSON.stringify(cart());
   await catalog();
-  syncCart();
+  await syncCart();
   if (JSON.stringify(cart()) !== before) {
     render();
     throw new Error("메뉴 구성이나 가격이 변경됐습니다. 확인 후 다시 주문해 주세요.");
@@ -341,6 +362,10 @@ async function checkout() {
 
 const actions = {
   back, checkout, refresh: fetchActivity,
+  async store(id) {
+    await loadMenus(id);
+    open("store", id);
+  },
   "load-more"() { state.listLimit += 30; render(); },
   heart(id) {
     const values = favorites();
@@ -392,7 +417,21 @@ screen.addEventListener("input", event => {
   if (event.target.id === "search-query") {
     state.query = event.target.value;
     state.listLimit = 30;
+    state.menuMatches.clear();
     screen.querySelector("#search-results").innerHTML = searchResults();
+    clearTimeout(searchTimer);
+    const query = state.query.trim();
+    const request = ++searchRequest;
+    if (query) searchTimer = setTimeout(async () => {
+      try {
+        const ids = await demo("menu_search", { query });
+        if (request !== searchRequest || route.name !== "search") return;
+        state.menuMatches = new Set(ids);
+        screen.querySelector("#search-results").innerHTML = searchResults();
+      } catch (error) {
+        if (request === searchRequest && route.name === "search") notify(error.message);
+      }
+    }, 200);
   }
   if (event.target.id === "address-query") {
     state.addressQuery = event.target.value;
@@ -432,13 +471,14 @@ screen.addEventListener("submit", event => {
 
 try {
   await catalog();
-  syncCart();
+  await syncCart();
   if (fromRecommendation) {
+    if (getStore(linkedStore)) await loadMenus(linkedStore);
     route = linkedStore ? { name: "store", value: linkedStore } : { name: "cart" };
     render(true);
     const linkedMenu = entryParams.get("menu");
     if (linkedStore && linkedMenu) screen.querySelector('[data-menu-id="' + CSS.escape(linkedMenu) + '"]')?.scrollIntoView({ block: "center" });
-  } else if (getStore(linkedStore)) open("store", linkedStore);
+  } else if (getStore(linkedStore)) await actions.store(linkedStore);
   else if (entryParams.get("category") === "chicken") open("category", "chicken");
   else render(true);
 } catch (error) {
