@@ -398,3 +398,16 @@ test('[P0-4] 메뉴에 main 표시가 있으면 그 메뉴를 대표 메뉴로 �
   const turn = await textTurn(engine, null, '용산구 분식 추천해줘');
   assert.match(turn.reply.cards[0].menu, /라볶이/);
 });
+
+test('[P1-3] 양보안에 바뀌는 조건을 from → to로 담는다', async () => {
+  const stores = [], menus = [];
+  for (const [id, franchise] of [['a', false], ['b', false], ['c', true]]) {
+    stores.push({ id, region: '서초구', dong: '서초4동', category: '치킨', name: id + '닭', tip: 1000, rating: 4.5, franchise });
+    menus.push({ id: id + '-1', store: id, name: '후라이드치킨', price: 18000, desc: '' });
+  }
+  const turn = await textTurn(createEngine({ stores, menus }), null, '서초구 치킨 프랜차이즈 말고');
+  assert.equal(turn.reply.cards.length, 2);
+  const b = turn.reply.buttons.find(b => b.change);
+  assert.deepEqual(b.change, { what: '프랜차이즈', from: '제외', to: '포함' });
+  assert.deepEqual(b.action, { type: 'apply', cond: { franchise: 'none' } });
+});
